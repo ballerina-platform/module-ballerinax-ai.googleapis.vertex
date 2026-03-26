@@ -136,7 +136,7 @@ isolated function buildVertexAiAssistantContent(ai:ChatAssistantMessage message)
     }
 
     if parts.length() == 0 {
-        parts.push({text: ""});
+        return error ai:Error("Assistant message has neither content nor tool calls");
     }
 
     return {role: "model", parts};
@@ -158,13 +158,13 @@ isolated function buildChatAssistantMessage(VertexAiResponse response) returns a
     }
     VertexAiPart[] parts = candidateContent.parts;
 
-    string? textContent = ();
     ai:FunctionCall[] functionCalls = [];
+    string textAccumulator = "";
 
     foreach VertexAiPart part in parts {
         string? text = part.text;
         if text is string {
-            textContent = text;
+            textAccumulator += text;
         }
         VertexAiFunctionCall? functionCall = part.functionCall;
         if functionCall is VertexAiFunctionCall {
@@ -174,6 +174,7 @@ isolated function buildChatAssistantMessage(VertexAiResponse response) returns a
             });
         }
     }
+    string? textContent = textAccumulator.length() > 0 ? textAccumulator : ();
 
     return {
         role: ai:ASSISTANT,
@@ -281,11 +282,18 @@ isolated function generateLlmResponse(http:Client vertexAiClient, string accessT
         path = buildOpenModelsPath(projectId, location);
     }
 
+    string promptText = "";
+    foreach VertexAiPart p in contentParts {
+        if p.text is string {
+            promptText += <string>p.text;
+        }
+    }
+
     if publisher == ANTHROPIC {
         AnthropicTool resultTool = getAnthropicGetResultsTool(responseSchema.schema);
         AnthropicToolChoice toolChoice = getAnthropicGetResultsToolChoice();
         map<json> requestPayload = buildAnthropicPayload(
-            [{role: "user", content: contentParts.toJson().toString()}],
+            [{role: "user", content: promptText}],
             (), [resultTool], toolChoice, maxTokens, temperature, ());
         span.addInputMessages(requestPayload["messages"]);
 
@@ -308,7 +316,7 @@ isolated function generateLlmResponse(http:Client vertexAiClient, string accessT
 
     } else if publisher == MISTRAL {
         MistralTool resultTool = getMistralGetResultsTool(responseSchema.schema);
-        MistralMessage userMessage = {role: "user", content: contentParts.toJson().toString()};
+        MistralMessage userMessage = {role: "user", content: promptText};
         map<json> requestPayload = buildMistralPayload(
             string `${publisher}/${modelType}`, [userMessage], [resultTool], "any", maxTokens, temperature, ());
         span.addInputMessages(requestPayload["messages"]);
@@ -340,7 +348,7 @@ isolated function generateLlmResponse(http:Client vertexAiClient, string accessT
             role: "system",
             content: string `You must respond ONLY with a valid JSON object that strictly matches this JSON schema: ${schemaJson}. Do not include any explanation or text outside the JSON object.`
         };
-        MistralMessage userMessage = {role: "user", content: contentParts.toJson().toString()};
+        MistralMessage userMessage = {role: "user", content: promptText};
         map<json> requestPayload = buildMistralPayload(
             modelId, [systemMessage, userMessage], [], (), maxTokens, temperature, ());
         span.addInputMessages(requestPayload["messages"]);
@@ -545,8 +553,8 @@ isolated function addDocumentPart(ai:Document doc, VertexAiPart[] parts) returns
             // URL-based images: validate then pass inline as text reference (Vertex AI
             // supports file_data for GCS URIs; for HTTP URLs we embed as text for now)
             ai:Url|constraint:Error validationRes = constraint:validate(content);
-            if validationRes is error {
-                return error(validationRes.message(), validationRes.cause());
+            if validationRes is constraint:Error {
+                return error ai:Error("Invalid image URL: " + validationRes.message(), validationRes);
             }
             parts.push({text: string `[Image: ${content}]`});
         }

@@ -38,7 +38,7 @@ isolated function convertMessagesToAnthropicMessages(ai:ChatMessage[]|ai:ChatUse
         return [anthropicMessages, ()];
     }
 
-    foreach ai:ChatMessage message in <ai:ChatMessage[]>messages {
+    foreach ai:ChatMessage message in messages {
         if message is ai:ChatSystemMessage {
             string text = check getChatMessageStringContent(message.content);
             systemParts.push(text);
@@ -62,11 +62,7 @@ isolated function convertMessagesToAnthropicMessages(ai:ChatMessage[]|ai:ChatUse
 
     string? systemPrompt = ();
     if systemParts.length() > 0 {
-        string joined = systemParts[0];
-        foreach int i in 1 ..< systemParts.length() {
-            joined += "\n\n" + systemParts[i];
-        }
-        systemPrompt = joined;
+        systemPrompt = string:'join("\n\n", ...systemParts);
     }
     return [anthropicMessages, systemPrompt];
 }
@@ -157,12 +153,12 @@ isolated function buildChatAssistantMessageFromAnthropicResponse(AnthropicRespon
         return error ai:LlmInvalidResponseError("Empty response from Anthropic model on Vertex AI");
     }
 
-    string? textContent = ();
     ai:FunctionCall[] functionCalls = [];
+    string textAccumulator = "";
 
     foreach AnthropicContentBlock block in response.content {
         if block.'type == "text" {
-            textContent = block.text;
+            textAccumulator += block.text ?: "";
         } else if block.'type == "tool_use" {
             string? blockName = block.name;
             if blockName is () {
@@ -178,6 +174,7 @@ isolated function buildChatAssistantMessageFromAnthropicResponse(AnthropicRespon
             functionCalls.push({name: blockName, arguments, id: block.id});
         }
     }
+    string? textContent = textAccumulator.length() > 0 ? textAccumulator : ();
 
     return {
         role: ai:ASSISTANT,

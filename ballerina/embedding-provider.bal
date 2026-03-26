@@ -41,7 +41,7 @@ public isolated distinct client class EmbeddingProvider {
             @display {label: "Access Token"} string accessToken,
             @display {label: "Project ID"} string projectId,
             @display {label: "Location"} string location = "global",
-            @display {label: "Model Type"} VERTEX_AI_EMBEDDING_MODEL_NAMES modelType = TEXT_EMBEDDING_005,
+            @display {label: "Model Type"} VertexAiEmbeddingModelNames modelType = TEXT_EMBEDDING_005,
             @display {label: "Service URL"} string serviceUrl = "",
             @display {label: "Connection Configuration"} *ConnectionConfig connectionConfig) returns ai:Error? {
 

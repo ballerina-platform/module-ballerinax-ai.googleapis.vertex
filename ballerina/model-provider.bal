@@ -19,7 +19,6 @@ import ballerina/ai.observe;
 import ballerina/http;
 import ballerina/jballerina.java;
 
-const DEFAULT_VERTEX_AI_SERVICE_URL_TEMPLATE = "https://{location}-aiplatform.googleapis.com";
 const DEFAULT_MAX_TOKEN_COUNT = 512;
 
 # ModelProvider is a client class that provides an interface for interacting with
@@ -84,6 +83,10 @@ public isolated distinct client class ModelProvider {
         } else {
             publisher = model.substring(0, slashIdx);
             modelType = model.substring(slashIdx + 1);
+        }
+
+        if modelType.length() == 0 {
+            return error ai:Error("Model name must not be empty in 'publisher/model-name' format");
         }
 
         if publisher != GOOGLE && publisher != ANTHROPIC && publisher != MISTRAL

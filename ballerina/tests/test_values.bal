@@ -16,6 +16,8 @@
 
 import ballerina/lang.array;
 
+const string GEMINI_2_0_FLASH = "gemini-2.0-flash";
+
 type Blog record {
     string title;
     string content;

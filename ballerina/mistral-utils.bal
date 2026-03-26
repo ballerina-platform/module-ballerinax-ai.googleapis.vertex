@@ -31,7 +31,7 @@ isolated function convertMessagesToMistralMessages(ai:ChatMessage[]|ai:ChatUserM
         return mistralMessages;
     }
 
-    foreach ai:ChatMessage message in <ai:ChatMessage[]>messages {
+    foreach ai:ChatMessage message in messages {
         if message is ai:ChatSystemMessage {
             string text = check getChatMessageStringContent(message.content);
             mistralMessages.push({role: "system", content: text});

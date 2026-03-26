@@ -43,7 +43,7 @@ public class Generator {
     public static Object generate(Environment env, BObject modelProvider,
                                   BObject prompt, BTypedesc expectedResponseTypedesc) {
         return env.getRuntime().callFunction(
-                new Module("ballerinax", "ai.googleapis.vertex", "1"), "generateLlmResponse", null,
+                new Module("sumudunissanka", "ai.googleapis.vertex", "1"), "generateLlmResponse", null,
                 modelProvider.get(StringUtils.fromString("vertexAiClient")),
                 modelProvider.get(StringUtils.fromString("accessToken")),
                 modelProvider.get(StringUtils.fromString("modelType")),

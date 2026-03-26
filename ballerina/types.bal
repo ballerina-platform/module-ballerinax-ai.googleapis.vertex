@@ -78,92 +78,19 @@ public type ConnectionConfig record {|
     boolean validation = true;
 |};
 
-# Publishers supported on Vertex AI Model Garden.
-public enum VERTEX_AI_PUBLISHER {
-    GOOGLE = "google",
-    ANTHROPIC = "anthropic",
-    MISTRAL = "mistralai",
-    META = "meta",
-    DEEPSEEK_AI = "deepseek-ai",
-    QWEN = "qwen",
-    KIMI = "kimi",
-    MINIMAX = "minimax",
-    OPENAI = "openai"
-}
-
-# Vertex AI Gemini model names supported by the provider.
-public enum VERTEX_AI_MODEL_NAMES {
-    GEMINI_2_0_FLASH = "gemini-2.0-flash",
-    GEMINI_2_0_FLASH_LITE = "gemini-2.0-flash-lite",
-    GEMINI_2_5_PRO = "gemini-2.5-pro-preview-03-25",
-    GEMINI_2_5_FLASH = "gemini-2.5-flash-preview-04-17",
-    GEMINI_1_5_PRO = "gemini-1.5-pro",
-    GEMINI_1_5_FLASH = "gemini-1.5-flash",
-    GEMINI_1_5_FLASH_8B = "gemini-1.5-flash-8b"
-}
-
-# Anthropic Claude model names available on Vertex AI Model Garden.
-# Uses the rawPredict endpoint with the Anthropic Messages API wire format.
-public enum ANTHROPIC_ON_VERTEX_MODEL_NAMES {
-    CLAUDE_OPUS_4_6 = "claude-opus-4-6",
-    CLAUDE_SONNET_4_6 = "claude-sonnet-4-6",
-    CLAUDE_SONNET_4 = "claude-sonnet-4@20250514",
-    CLAUDE_HAIKU_4_5 = "claude-haiku-4-5@20251001",
-    CLAUDE_3_7_SONNET = "claude-3-7-sonnet@20250219",
-    CLAUDE_3_5_SONNET_V2 = "claude-3-5-sonnet-v2"
-}
-
-# Mistral model names available on Vertex AI Model Garden.
-# Uses the rawPredict endpoint with the OpenAI-compatible wire format.
-public enum MISTRAL_ON_VERTEX_MODEL_NAMES {
-    MISTRAL_MEDIUM_3 = "mistral-medium-3",
-    MISTRAL_SMALL_2503 = "mistral-small-2503",
-    CODESTRAL_2 = "codestral-2"
-}
-
-# Meta Llama model names available on Vertex AI Model Garden.
-# Uses the OpenAI-compatible `/endpoints/openapi/chat/completions` endpoint.
-public enum META_ON_VERTEX_MODEL_NAMES {
-    LLAMA_4_MAVERICK = "llama-4-maverick-17b-128e-instruct-maas",
-    LLAMA_4_SCOUT = "llama-4-scout-17b-16e-instruct-maas",
-    LLAMA_3_3_70B = "llama-3.3-70b-instruct-maas"
-}
-
-# DeepSeek model names available on Vertex AI Model Garden.
-# Uses the OpenAI-compatible `/endpoints/openapi/chat/completions` endpoint.
-public enum DEEPSEEK_ON_VERTEX_MODEL_NAMES {
-    DEEPSEEK_V3 = "deepseek-v3-0324",
-    DEEPSEEK_R1 = "deepseek-r1"
-}
-
-# Qwen (Alibaba) model names available on Vertex AI Model Garden.
-# Uses the OpenAI-compatible `/endpoints/openapi/chat/completions` endpoint.
-public enum QWEN_ON_VERTEX_MODEL_NAMES {
-    QWEN_3_235B = "qwen3-235b-a22b",
-    QWEN_3_32B = "qwen3-32b"
-}
-
-# Kimi model names available on Vertex AI Model Garden.
-# Uses the OpenAI-compatible `/endpoints/openapi/chat/completions` endpoint.
-public enum KIMI_ON_VERTEX_MODEL_NAMES {
-    KIMI_K2 = "kimi-k2"
-}
-
-# MiniMax model names available on Vertex AI Model Garden.
-# Uses the OpenAI-compatible `/endpoints/openapi/chat/completions` endpoint.
-public enum MINIMAX_ON_VERTEX_MODEL_NAMES {
-    MINIMAX_M2 = "minimax-m2"
-}
-
-# OpenAI model names available on Vertex AI Model Garden.
-# Uses the OpenAI-compatible `/endpoints/openapi/chat/completions` endpoint.
-public enum OPENAI_ON_VERTEX_MODEL_NAMES {
-    GPT_OSS_120B = "gpt-oss-120b-maas",
-    GPT_OSS_20B = "gpt-oss-20b-maas"
-}
+// Publisher string constants used internally for routing logic.
+const string GOOGLE = "google";
+const string ANTHROPIC = "anthropic";
+const string MISTRAL = "mistralai";
+const string META = "meta";
+const string DEEPSEEK_AI = "deepseek-ai";
+const string QWEN = "qwen";
+const string KIMI = "kimi";
+const string MINIMAX = "minimax";
+const string OPENAI = "openai";
 
 # Embedding model names supported by the Vertex AI embedding provider.
-public enum VERTEX_AI_EMBEDDING_MODEL_NAMES {
+public enum VertexAiEmbeddingModelNames {
     TEXT_EMBEDDING_005 = "text-embedding-005",
     TEXT_MULTILINGUAL_EMBEDDING_002 = "text-multilingual-embedding-002",
     TEXT_EMBEDDING_004 = "text-embedding-004"
@@ -204,8 +131,9 @@ type VertexAiContent record {
 };
 
 # Represents the systemInstruction field in a Vertex AI request.
-# The role field is intentionally absent as Vertex AI ignores it for system instructions.
+# Vertex AI expects role "user" on the systemInstruction object.
 type VertexAiSystemInstruction record {
+    string role = "user";
     VertexAiPart[] parts;
 };
 
@@ -334,6 +262,8 @@ type AnthropicResponse record {
 // OpenAI-compatible wire format. The model name is sent in the request body.
 
 # A single message in the Mistral/OpenAI-compatible format.
+# `content` is doubly-optional: nilable (string?) because assistant messages with tool calls
+# omit content entirely, and record-optional (?) to allow the field to be absent in the JSON.
 type MistralMessage record {
     string role;
     string? content?;
