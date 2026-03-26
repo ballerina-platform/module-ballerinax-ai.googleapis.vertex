@@ -394,7 +394,7 @@ dependencies = [
 [[package]]
 org = "sumudunissanka"
 name = "ai.googleapis.vertex"
-version = "1.0.4"
+version = "1.0.11"
 dependencies = [
 	{org = "ballerina", name = "ai"},
 	{org = "ballerina", name = "constraint"},
