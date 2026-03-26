@@ -18,6 +18,7 @@ import ballerina/ai;
 import ballerina/ai.observe;
 import ballerina/http;
 import ballerina/jballerina.java;
+import ballerina/time;
 
 const DEFAULT_MAX_TOKEN_COUNT = 512;
 
@@ -38,7 +39,9 @@ const DEFAULT_MAX_TOKEN_COUNT = 512;
 public isolated distinct client class ModelProvider {
     *ai:ModelProvider;
     private final http:Client vertexAiClient;
-    private final string accessToken;
+    private final VertexAiAuth auth;
+    private string accessToken = "";
+    private int tokenExpiryTime = 0;
     private final string modelType;
     private final string projectId;
     private final string location;
@@ -48,13 +51,12 @@ public isolated distinct client class ModelProvider {
 
     # Initializes the Vertex AI model provider with the given configuration.
     #
-    # + accessToken - A valid Google Cloud OAuth2 bearer access token
+    # + auth - Authentication config: `OAuth2RefreshConfig` for OAuth2 refresh token flow,
+    #          or `ServiceAccountConfig` for automatic token refresh via service account
     # + projectId - The Google Cloud project ID
     # + location - The Google Cloud region (e.g., `"global","us-central1"`)
     # + model - The model in `"publisher/model-name"` format, e.g.:
-    #           `"google/gemini-2.0-flash"`, `"anthropic/claude-sonnet-4-6"`,
-    #           `"mistralai/mistral-medium-3"`. Omitting the publisher prefix
-    #           defaults to `"google"`.
+    #           `"google/gemini-2.0-flash"`.
     # + serviceUrl - The base URL of the Vertex AI API endpoint. Defaults to the
     #                regional URL `https://{location}-aiplatform.googleapis.com`
     # + maxTokens - The upper limit for the number of tokens in the model's response
@@ -63,7 +65,7 @@ public isolated distinct client class ModelProvider {
     # + connectionConfig - Additional HTTP connection configuration
     # + return - `()` on successful initialization; otherwise, returns an `ai:Error`
     public isolated function init(
-            @display {label: "Access Token"} string accessToken,
+            @display {label: "Auth"} VertexAiAuth auth,
             @display {label: "Project ID"} string projectId,
             @display {label: "Model"} string model,
             @display {label: "Location"} string location = "global",
@@ -118,13 +120,22 @@ public isolated distinct client class ModelProvider {
             validation: connectionConfig.validation
         };
 
+        if auth is OAuth2RefreshConfig {
+            clientConfig.auth = {
+                refreshUrl: auth.refreshUrl,
+                refreshToken: auth.refreshToken,
+                clientId: auth.clientId,
+                clientSecret: auth.clientSecret
+            };
+        }
+
         http:Client|error httpClient = new http:Client(resolvedServiceUrl, clientConfig);
         if httpClient is error {
             return error ai:Error("Failed to initialize Vertex AI Model", httpClient);
         }
 
         self.vertexAiClient = httpClient;
-        self.accessToken = accessToken;
+        self.auth = auth;
         self.modelType = modelType;
         self.projectId = projectId;
         self.location = location;
@@ -161,10 +172,15 @@ public isolated distinct client class ModelProvider {
             span.addTools(tools);
         }
 
-        map<string> headers = {
-            "Authorization": string `Bearer ${self.accessToken}`,
-            "Content-Type": "application/json"
-        };
+        map<string> headers = {"Content-Type": "application/json"};
+        if self.auth is ServiceAccountConfig {
+            string|ai:Error accessToken = self.getAccessToken();
+            if accessToken is ai:Error {
+                span.close(accessToken);
+                return accessToken;
+            }
+            headers["Authorization"] = string `Bearer ${accessToken}`;
+        }
 
         ChatResult|ai:Error result;
         if self.publisher == ANTHROPIC {
@@ -280,6 +296,23 @@ public isolated distinct client class ModelProvider {
             inputTokens: response.usage?.input_tokens,
             outputTokens: response.usage?.output_tokens
         };
+    }
+
+    private isolated function getAccessToken() returns string|ai:Error {
+        lock {
+            int currentTime = time:utcNow()[0];
+            if self.accessToken.length() > 0 && currentTime < self.tokenExpiryTime - 300 {
+                return self.accessToken;
+            }
+            ServiceAccountConfig saConfig = <ServiceAccountConfig>self.auth;
+            string|error token = getServiceAccountToken(saConfig);
+            if token is error {
+                return error ai:Error("Failed to obtain service account access token", token);
+            }
+            self.accessToken = token;
+            self.tokenExpiryTime = currentTime + 3600;
+            return self.accessToken;
+        }
     }
 
     private isolated function executeMistralChat(ai:ChatMessage[]|ai:ChatUserMessage messages,

@@ -78,6 +78,39 @@ public type ConnectionConfig record {|
     boolean validation = true;
 |};
 
+# Authentication configuration for Vertex AI.
+# - `OAuth2RefreshConfig` — OAuth2 refresh token flow. HTTP client auto-refreshes forever.
+# - `ServiceAccountConfig`— Service account JWT Bearer. Tokens re-signed and exchanged
+#                           automatically before expiry; works for long-running services.
+public type VertexAiAuth OAuth2RefreshConfig|ServiceAccountConfig;
+
+# Google OAuth2 refresh token credentials. The HTTP client exchanges the refresh
+# token for a short-lived access token and renews it transparently before expiry.
+# Get credentials via: `gcloud auth application-default login`
+# then read `~/.config/gcloud/application_default_credentials.json`.
+public type OAuth2RefreshConfig readonly & record {|
+    # OAuth2 client ID
+    string clientId;
+    # OAuth2 client secret
+    string clientSecret;
+    # Long-lived refresh token (does not expire unless revoked)
+    string refreshToken;
+    # Token endpoint URL
+    string refreshUrl = "https://oauth2.googleapis.com/token";
+|};
+
+# Google Cloud Service Account credentials for Vertex AI authentication.
+# A new signed JWT is built and exchanged for a fresh access token automatically,
+# 5 minutes before the current token expires. Works for long-running services.
+public type ServiceAccountConfig readonly & record {|
+    # Service account email (`client_email` field in the JSON key file)
+    string clientEmail;
+    # RSA private key in PEM format (`private_key` field in the JSON key file)
+    string privateKey;
+    # OAuth2 scopes to request
+    string[] scopes = ["https://www.googleapis.com/auth/cloud-platform"];
+|};
+
 // Publisher string constants used internally for routing logic.
 const string GOOGLE = "google";
 const string ANTHROPIC = "anthropic";
