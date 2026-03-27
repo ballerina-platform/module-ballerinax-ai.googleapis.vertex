@@ -12,7 +12,7 @@ Vertex AI enabled.
 
 - Create a [Google Cloud account](https://cloud.google.com) and set up a project.
 - Enable the [Vertex AI API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) for your project.
-- Obtain a valid OAuth2 access token (e.g., via `gcloud auth print-access-token`).
+- Set up authentication using one of the supported methods below.
 
 ## Quickstart
 
@@ -28,14 +28,45 @@ import ballerinax/ai.googleapis.vertex;
 
 ### Step 2: Initialize the Model Provider
 
-Here's how to initialize the Model Provider:
+Three authentication options are supported:
+
+**Option 1 — OAuth2 refresh token** (recommended for development; credentials from `~/.config/gcloud/application_default_credentials.json`):
 
 ```ballerina
 import ballerina/ai;
 import ballerinax/ai.googleapis.vertex;
 
 final ai:ModelProvider vertexModel = check new vertex:ModelProvider(
-    accessToken = "your-gcp-access-token",
+    auth = {
+        clientId: "your-client-id",
+        clientSecret: "your-client-secret",
+        refreshToken: "your-refresh-token"
+    },
+    projectId = "your-gcp-project-id",
+    location = "us-central1",
+    model = "google/gemini-2.0-flash"
+);
+```
+
+**Option 2 — Service account JSON key file** (recommended for production):
+
+```ballerina
+final ai:ModelProvider vertexModel = check new vertex:ModelProvider(
+    auth = "/path/to/service-account-key.json",
+    projectId = "your-gcp-project-id",
+    location = "us-central1",
+    model = "google/gemini-2.0-flash"
+);
+```
+
+**Option 3 — Service account inline credentials** (use when you need to override scopes):
+
+```ballerina
+final ai:ModelProvider vertexModel = check new vertex:ModelProvider(
+    auth = {
+        clientEmail: "your-sa@your-project.iam.gserviceaccount.com",
+        privateKey: "-----BEGIN RSA PRIVATE KEY-----\n..."
+    },
     projectId = "your-gcp-project-id",
     location = "us-central1",
     model = "google/gemini-2.0-flash"
@@ -81,10 +112,9 @@ import ballerina/ai;
 import ballerinax/ai.googleapis.vertex;
 
 final ai:EmbeddingProvider vertexEmbedding = check new vertex:EmbeddingProvider(
-    accessToken = "your-gcp-access-token",
+    auth = "/path/to/service-account-key.json",
     projectId = "your-gcp-project-id",
-    location = "us-central1",
-    model = "text-embedding-005"
+    location = "us-central1"
 );
 
 ai:Embedding embedding = check vertexEmbedding->embed(<ai:TextChunk>{content: "Hello, world!"});
