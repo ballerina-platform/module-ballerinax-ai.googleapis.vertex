@@ -298,7 +298,7 @@ public isolated distinct client class ModelProvider {
         };
     }
 
-    private isolated function getAccessToken() returns string|ai:Error {
+    isolated function getAccessToken() returns string|ai:Error {
         lock {
             int currentTime = time:utcNow()[0];
             if self.accessToken.length() > 0 && currentTime < self.tokenExpiryTime - 300 {

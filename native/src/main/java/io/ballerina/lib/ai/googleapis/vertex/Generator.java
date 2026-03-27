@@ -20,6 +20,7 @@ package io.ballerina.lib.ai.googleapis.vertex;
 import io.ballerina.runtime.api.Environment;
 import io.ballerina.runtime.api.Module;
 import io.ballerina.runtime.api.utils.StringUtils;
+import io.ballerina.runtime.api.values.BMap;
 import io.ballerina.runtime.api.values.BObject;
 import io.ballerina.runtime.api.values.BTypedesc;
 
@@ -42,6 +43,10 @@ public class Generator {
      */
     public static Object generate(Environment env, BObject modelProvider,
                                   BObject prompt, BTypedesc expectedResponseTypedesc) {
+        Object auth = modelProvider.get(StringUtils.fromString("auth"));
+        if (auth instanceof BMap && ((BMap<?, ?>) auth).getType().getName().equals("ServiceAccountConfig")) {
+            env.getRuntime().callMethod(modelProvider, "getAccessToken", null);
+        }
         return env.getRuntime().callFunction(
                 new Module("ballerinax", "ai.googleapis.vertex", "1"), "generateLlmResponse", null,
                 modelProvider.get(StringUtils.fromString("vertexAiClient")),
