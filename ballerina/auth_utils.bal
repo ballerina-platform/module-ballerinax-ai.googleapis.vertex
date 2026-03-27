@@ -43,3 +43,4 @@ isolated function getServiceAccountToken(ServiceAccountConfig config) returns st
     });
     return provider.generateToken();
 }
+

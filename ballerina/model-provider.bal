@@ -17,6 +17,7 @@
 import ballerina/ai;
 import ballerina/ai.observe;
 import ballerina/http;
+import ballerina/io;
 import ballerina/jballerina.java;
 import ballerina/time;
 
@@ -135,7 +136,19 @@ public isolated distinct client class ModelProvider {
         }
 
         self.vertexAiClient = httpClient;
-        self.auth = auth;
+        if auth is ServiceAccountJsonFilePath {
+            json|error fileContent = io:fileReadJson(auth);
+            if fileContent is error {
+                return error ai:Error("Failed to read service account key file", fileContent);
+            }
+            record {string client_email; string private_key;}|error saRecord = fileContent.fromJsonWithType();
+            if saRecord is error {
+                return error ai:Error("Invalid service account key file: missing or invalid client_email/private_key", saRecord);
+            }
+            self.auth = {clientEmail: saRecord.client_email, privateKey: saRecord.private_key};
+        } else {
+            self.auth = auth;
+        }
         self.modelType = modelType;
         self.projectId = projectId;
         self.location = location;
@@ -304,8 +317,7 @@ public isolated distinct client class ModelProvider {
             if self.accessToken.length() > 0 && currentTime < self.tokenExpiryTime - 300 {
                 return self.accessToken;
             }
-            ServiceAccountConfig saConfig = <ServiceAccountConfig>self.auth;
-            string|error token = getServiceAccountToken(saConfig);
+            string|error token = getServiceAccountToken(<ServiceAccountConfig>self.auth);
             if token is error {
                 return error ai:Error("Failed to obtain service account access token", token);
             }

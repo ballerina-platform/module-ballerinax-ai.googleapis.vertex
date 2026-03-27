@@ -80,9 +80,16 @@ public type ConnectionConfig record {|
 
 # Authentication configuration for Vertex AI.
 # - `OAuth2RefreshConfig` — OAuth2 refresh token flow. HTTP client auto-refreshes forever.
-# - `ServiceAccountConfig`— Service account JWT Bearer. Tokens re-signed and exchanged
-#                           automatically before expiry; works for long-running services.
-public type VertexAiAuth OAuth2RefreshConfig|ServiceAccountConfig;
+# - `ServiceAccountConfig` — Service account JWT Bearer with inline credentials. Tokens
+#                            re-signed and exchanged automatically before expiry.
+# - `ServiceAccountJsonFilePath` — Path to a Google Cloud service account JSON key file.
+#                                Use `ServiceAccountConfig` instead if you need to override scopes.
+public type VertexAiAuth OAuth2RefreshConfig|ServiceAccountConfig|ServiceAccountJsonFilePath;
+
+# Path to a Google Cloud service account JSON key file.
+# The connector reads `client_email` and `private_key` from the file and refreshes
+# the token automatically. Use `ServiceAccountConfig` if you need to override scopes.
+public type ServiceAccountJsonFilePath string;
 
 # Google OAuth2 refresh token credentials. The HTTP client exchanges the refresh
 # token for a short-lived access token and renews it transparently before expiry.
