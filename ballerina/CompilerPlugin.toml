@@ -3,7 +3,7 @@ id = "ai-googleapis-vertex-compiler-plugin"
 class = "io.ballerina.lib.ai.googleapis.vertex.compiler.AiVertexAICompilerPlugin"
 
 [[dependency]]
-path = "../compiler-plugin/build/libs/ai.googleapis.vertex-compiler-plugin-1.0.0-SNAPSHOT.jar"
+path = "../compiler-plugin/build/libs/ai.googleapis.vertex-compiler-plugin-1.1.0-SNAPSHOT.jar"
 
 [[dependency]]
 path = "../compiler-plugin/build/libs/ballerina-to-openapi-2.3.0.jar"
