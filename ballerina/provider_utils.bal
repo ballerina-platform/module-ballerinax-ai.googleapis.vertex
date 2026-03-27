@@ -57,7 +57,7 @@ isolated function isOpenModelPublisher(string publisher) returns boolean {
 }
 
 isolated function buildEmbedContentPath(string projectId, string location, string modelType) returns string {
-    return string `/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelType}:embedContent`;
+    return string `/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelType}:predict`;
 }
 
 // ── Message conversion ────────────────────────────────────────────────────────

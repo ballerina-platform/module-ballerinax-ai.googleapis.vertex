@@ -22,19 +22,38 @@ const GENERATE_SERVICE_URL = "http://localhost:8080/llm/vertexai";
 const CHAT_SERVICE_URL = "http://localhost:8081/llm/vertexai";
 const EMBED_SERVICE_URL = "http://localhost:8082/llm/vertexai";
 
-const ACCESS_TOKEN = "not-a-real-access-token";
 const PROJECT_ID = "test-project";
 const LOCATION = "us-central1";
 
-// ── Shared providers ──────────────────────────────────────────────────────────
+// TEST_AUTH uses the mock OAuth2 token endpoint (port 8083) so that
+// http:Client init does not attempt to reach the real Google token URL.
+final OAuth2RefreshConfig TEST_AUTH = {
+    clientId: "test-client-id",
+    clientSecret: "test-client-secret",
+    refreshToken: "test-refresh-token",
+    refreshUrl: "http://localhost:8083"
+};
 
-final ModelProvider provider = check new (ACCESS_TOKEN, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, GENERATE_SERVICE_URL);
+// ── Shared providers ──────────────────────────────────────────────────────────
+// Providers are initialized in @test:BeforeSuite so that the mock OAuth2
+// token endpoint (port 8083) is already listening when http:Client init
+// calls it for the first access token.
+
+ModelProvider? provider = ();
+EmbeddingProvider? embeddingProvider = ();
+
+@test:BeforeSuite
+function initProviders() returns error? {
+    provider = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, GENERATE_SERVICE_URL);
+    embeddingProvider = check new (TEST_AUTH, PROJECT_ID, LOCATION, TEXT_EMBEDDING_005, EMBED_SERVICE_URL);
+}
 
 // ── generate() tests ──────────────────────────────────────────────────────────
 
 @test:Config
 function testGenerateMethodWithBasicReturnType() returns ai:Error? {
-    int|error rating = provider->generate(`Rate this blog out of 10.
+    ModelProvider p = <ModelProvider>provider;
+    int|error rating = p->generate(`Rate this blog out of 10.
         Title: ${blog1.title}
         Content: ${blog1.content}`);
     test:assertEquals(rating, 4);
@@ -42,7 +61,8 @@ function testGenerateMethodWithBasicReturnType() returns ai:Error? {
 
 @test:Config
 function testGenerateMethodWithBasicArrayReturnType() returns ai:Error? {
-    int[]|error rating = provider->generate(`Evaluate this blogs out of 10.
+    ModelProvider p = <ModelProvider>provider;
+    int[]|error rating = p->generate(`Evaluate this blogs out of 10.
         Title: ${blog1.title}
         Content: ${blog1.content}
 
@@ -53,7 +73,8 @@ function testGenerateMethodWithBasicArrayReturnType() returns ai:Error? {
 
 @test:Config
 function testGenerateMethodWithRecordReturnType() returns error? {
-    Review|error result = provider->generate(`Please rate this blog out of ${"10"}.
+    ModelProvider p = <ModelProvider>provider;
+    Review|error result = p->generate(`Please rate this blog out of ${"10"}.
         Title: ${blog2.title}
         Content: ${blog2.content}`);
     test:assertEquals(result, check review.fromJsonStringWithType(Review));
@@ -61,18 +82,20 @@ function testGenerateMethodWithRecordReturnType() returns error? {
 
 @test:Config
 function testGenerateMethodWithTextDocument() returns ai:Error? {
+    ModelProvider p = <ModelProvider>provider;
     ai:TextDocument blog = {
         content: string `Title: ${blog1.title} Content: ${blog1.content}`
     };
     int maxScore = 10;
 
-    int|error rating = provider->generate(`How would you rate this ${"blog"} content out of ${maxScore}. ${blog}.`);
+    int|error rating = p->generate(`How would you rate this ${"blog"} content out of ${maxScore}. ${blog}.`);
     test:assertEquals(rating, 4);
 }
 
 @test:Config
 function testGenerateMethodWithStringUnionNull() returns error? {
-    string? result = check provider->generate(`Give me a random joke`);
+    ModelProvider p = <ModelProvider>provider;
+    string? result = check p->generate(`Give me a random joke`);
     test:assertTrue(result is string);
 }
 
@@ -104,7 +127,7 @@ final ai:ChatCompletionFunctions bookFlightTool = {
 
 @test:Config
 function testChatWithFunctionCallResponse() returns error? {
-    ModelProvider chatProvider = check new (ACCESS_TOKEN, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, CHAT_SERVICE_URL);
+    ModelProvider chatProvider = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, CHAT_SERVICE_URL);
     ai:ChatMessage[] messages = [{role: ai:USER, content: "What is the weather in Colombo?"}];
 
     ai:ChatAssistantMessage|ai:Error response = chatProvider->chat(messages, [getWeatherTool]);
@@ -122,7 +145,7 @@ function testChatWithFunctionCallResponse() returns error? {
 
 @test:Config
 function testChatWithBookFlightFunctionCall() returns error? {
-    ModelProvider chatProvider = check new (ACCESS_TOKEN, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, CHAT_SERVICE_URL);
+    ModelProvider chatProvider = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, CHAT_SERVICE_URL);
     ai:ChatMessage[] messages = [{role: ai:USER, content: "Book a flight to London"}];
 
     ai:ChatAssistantMessage|ai:Error response = chatProvider->chat(messages, [bookFlightTool]);
@@ -140,7 +163,7 @@ function testChatWithBookFlightFunctionCall() returns error? {
 
 @test:Config
 function testChatWithTextOnlyResponse() returns error? {
-    ModelProvider chatProvider = check new (ACCESS_TOKEN, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, CHAT_SERVICE_URL);
+    ModelProvider chatProvider = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, CHAT_SERVICE_URL);
     ai:ChatMessage[] messages = [{role: ai:USER, content: "Hello"}];
 
     ai:ChatAssistantMessage|ai:Error response = chatProvider->chat(messages, []);
@@ -154,7 +177,7 @@ function testChatWithTextOnlyResponse() returns error? {
 
 @test:Config
 function testChatMethodConnectionError() returns ai:Error? {
-    ModelProvider chatProvider = check new (ACCESS_TOKEN, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION,
+    ModelProvider chatProvider = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION,
             "http://localhost:9999/llm/vertexai");
     ai:ChatMessage[] messages = [
         {role: ai:USER, content: "Hello, how are you?"}
@@ -165,32 +188,32 @@ function testChatMethodConnectionError() returns ai:Error? {
 
 // ── EmbeddingProvider tests ───────────────────────────────────────────────────
 
-final EmbeddingProvider embeddingProvider = check new (ACCESS_TOKEN, PROJECT_ID, LOCATION, TEXT_EMBEDDING_005,
-        EMBED_SERVICE_URL);
-
 @test:Config
 function testEmbedWithTextChunk() returns error? {
+    EmbeddingProvider ep = <EmbeddingProvider>embeddingProvider;
     ai:TextChunk chunk = {'type: "text-chunk", content: "Hello, world!"};
-    ai:Embedding result = check embeddingProvider->embed(chunk);
+    ai:Embedding result = check ep->embed(chunk);
     test:assertTrue(result is float[]);
     test:assertEquals((<float[]>result).length(), 3);
 }
 
 @test:Config
 function testEmbedWithTextDocument() returns error? {
+    EmbeddingProvider ep = <EmbeddingProvider>embeddingProvider;
     ai:TextDocument doc = {'type: "text", content: "This is a text document."};
-    ai:Embedding result = check embeddingProvider->embed(doc);
+    ai:Embedding result = check ep->embed(doc);
     test:assertTrue(result is float[]);
     test:assertEquals((<float[]>result).length(), 3);
 }
 
 @test:Config
 function testBatchEmbedWithTextChunks() returns error? {
+    EmbeddingProvider ep = <EmbeddingProvider>embeddingProvider;
     ai:TextChunk[] chunks = [
         {'type: "text-chunk", content: "First chunk."},
         {'type: "text-chunk", content: "Second chunk."}
     ];
-    ai:Embedding[] results = check embeddingProvider->batchEmbed(chunks);
+    ai:Embedding[] results = check ep->batchEmbed(chunks);
     test:assertEquals(results.length(), 2);
     test:assertTrue(results[0] is float[]);
     test:assertTrue(results[1] is float[]);
@@ -198,41 +221,45 @@ function testBatchEmbedWithTextChunks() returns error? {
 
 @test:Config
 function testBatchEmbedWithTextDocuments() returns error? {
+    EmbeddingProvider ep = <EmbeddingProvider>embeddingProvider;
     ai:TextDocument[] docs = [
         {'type: "text", content: "Document one."},
         {'type: "text", content: "Document two."},
         {'type: "text", content: "Document three."}
     ];
-    ai:Embedding[] results = check embeddingProvider->batchEmbed(docs);
+    ai:Embedding[] results = check ep->batchEmbed(docs);
     test:assertEquals(results.length(), 3);
 }
 
 @test:Config
 function testEmbedWithUnsupportedChunkType() {
+    EmbeddingProvider ep = <EmbeddingProvider>embeddingProvider;
     ai:Chunk unsupportedChunk = {'type: "custom", content: "some data"};
-    ai:Embedding|ai:Error result = embeddingProvider->embed(unsupportedChunk);
+    ai:Embedding|ai:Error result = ep->embed(unsupportedChunk);
     test:assertTrue(result is ai:Error);
     test:assertTrue((<ai:Error>result).message().includes("Unsupported chunk type"));
 }
 
 @test:Config
 function testBatchEmbedWithUnsupportedChunkType() {
+    EmbeddingProvider ep = <EmbeddingProvider>embeddingProvider;
     ai:TextChunk validChunk = {'type: "text-chunk", content: "valid"};
     ai:Chunk invalidChunk = {'type: "custom", content: "invalid"};
-    ai:Embedding[]|ai:Error result = embeddingProvider->batchEmbed([validChunk, invalidChunk]);
+    ai:Embedding[]|ai:Error result = ep->batchEmbed([validChunk, invalidChunk]);
     test:assertTrue(result is ai:Error);
     test:assertTrue((<ai:Error>result).message().includes("Unsupported chunk type"));
 }
 
 @test:Config
 function testBatchEmbedEmptyList() returns error? {
-    ai:Embedding[] results = check embeddingProvider->batchEmbed([]);
+    EmbeddingProvider ep = <EmbeddingProvider>embeddingProvider;
+    ai:Embedding[] results = check ep->batchEmbed([]);
     test:assertEquals(results.length(), 0);
 }
 
 @test:Config
 function testEmbedConnectionError() {
-    EmbeddingProvider|error badProvider = new (ACCESS_TOKEN, PROJECT_ID, LOCATION, TEXT_EMBEDDING_005,
+    EmbeddingProvider|error badProvider = new (TEST_AUTH, PROJECT_ID, LOCATION, TEXT_EMBEDDING_005,
             "http://localhost:9999/llm/vertexai");
     if badProvider is error {
         test:assertFail("Provider initialization should succeed");

@@ -231,13 +231,18 @@ type VertexAiResponse record {
     string modelVersion?;
 };
 
-# Vertex AI embedContent response.
-type VertexAiEmbedResponse record {
-    VertexAiEmbedding embedding;
+# Vertex AI :predict response for embedding models.
+type VertexAiPredictEmbedResponse record {
+    VertexAiPredictEmbedPrediction[] predictions;
+};
+
+# A single prediction entry in the :predict embedding response.
+type VertexAiPredictEmbedPrediction record {
+    VertexAiPredictEmbedding embeddings;
 };
 
 # The embedding values returned by Vertex AI.
-type VertexAiEmbedding record {
+type VertexAiPredictEmbedding record {
     float[] values;
 };
 

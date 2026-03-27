@@ -172,17 +172,19 @@ public isolated distinct client class EmbeddingProvider {
         }
 
         map<json> requestPayload = {
-            "content": {
-                "parts": [{"text": content}]
-            }
+            "instances": [{"content": content}]
         };
 
-        VertexAiEmbedResponse|error response = self.vertexAiClient->post(path, requestPayload, headers);
+        VertexAiPredictEmbedResponse|error response = self.vertexAiClient->post(path, requestPayload, headers);
         if response is error {
             return error ai:LlmConnectionError("Error while connecting to the embedding model", response);
         }
 
-        float[] values = response.embedding.values;
+        VertexAiPredictEmbedPrediction[] predictions = response.predictions;
+        if predictions.length() == 0 {
+            return error ai:LlmInvalidResponseError("Vertex AI returned no predictions");
+        }
+        float[] values = predictions[0].embeddings.values;
         if values.length() == 0 {
             return error ai:LlmInvalidResponseError("Vertex AI returned an empty embedding vector");
         }

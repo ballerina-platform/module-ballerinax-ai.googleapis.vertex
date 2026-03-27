@@ -178,6 +178,19 @@ service /llm/vertexai on new http:Listener(8081) {
     }
 }
 
+// ── Mock OAuth2 token endpoint (port 8083) ────────────────────────────────────
+// Ballerina's oauth2 module creates an http:Client with the refreshUrl as base
+// and always POSTs to "/", so the resource path must be "." (service base path).
+service / on new http:Listener(8083) {
+    resource function post .(@http:Payload string _payload) returns json {
+        return {
+            "access_token": "mock-test-access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        };
+    }
+}
+
 // ── Embedding mock service (port 8082) ────────────────────────────────────────
 service /llm/vertexai on new http:Listener(8082) {
     resource function post v1/projects/[string projectId]/locations/[string location]/publishers/google/models/[string modelId](
@@ -187,9 +200,13 @@ service /llm/vertexai on new http:Listener(8082) {
         test:assertTrue(authHeader.startsWith("Bearer "), "Authorization header must start with 'Bearer '");
 
         return {
-            "embedding": {
-                "values": [0.1, 0.2, 0.3]
-            }
+            "predictions": [
+                {
+                    "embeddings": {
+                        "values": [0.1, 0.2, 0.3]
+                    }
+                }
+            ]
         };
     }
 }
