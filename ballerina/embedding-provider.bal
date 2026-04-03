@@ -22,6 +22,7 @@ import ballerina/time;
 
 # EmbeddingProvider is a client class that provides an interface for generating
 # vector embeddings using Google Vertex AI text embedding models.
+@display {label: "Google Vertex Embedding Provider"}
 public isolated distinct client class EmbeddingProvider {
     *ai:EmbeddingProvider;
     private final http:Client vertexAiClient;
