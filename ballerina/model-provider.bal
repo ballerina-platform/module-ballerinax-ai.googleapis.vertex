@@ -37,6 +37,7 @@ const DEFAULT_MAX_TOKEN_COUNT = 512;
 # - `"qwen/qwen3-235b-a22b"` — OpenAI-compatible open-models endpoint
 # - `"kimi/kimi-k2"` — OpenAI-compatible open-models endpoint
 # - `"minimax/minimax-m2"` — OpenAI-compatible open-models endpoint
+@display {label: "Google Vertex Model Provider"}
 public isolated distinct client class ModelProvider {
     *ai:ModelProvider;
     private final http:Client vertexAiClient;
