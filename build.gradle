@@ -66,8 +66,7 @@ task build {
 
 tasks.findByPath(':ai.googleapis.vertex-ballerina:build').mustRunAfter(':ai.googleapis.vertex-native:build')
 
-if (gradle.startParameter.taskNames.any { it == 'release' || it.endsWith(':release') }) {
-    release {
+release {
         buildTasks = ['build']
         failOnSnapshotDependencies = true
         versionPropertyFile = 'gradle.properties'
@@ -76,5 +75,4 @@ if (gradle.startParameter.taskNames.any { it == 'release' || it.endsWith(':relea
             requireBranch = "release-${moduleVersion}"
             pushToRemote = 'origin'
         }
-    }
 }
