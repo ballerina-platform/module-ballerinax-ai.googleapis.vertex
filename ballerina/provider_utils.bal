@@ -509,14 +509,14 @@ isolated function buildContentPartsFromPrompt(ai:Prompt prompt) returns VertexAi
         anydata insertion = insertions[i];
         string nextStr = strings[i + 1];
 
-        if insertion is ai:Document {
+        if insertion is ai:Document|ai:Chunk {
             addTextPart(accumulatedText, parts);
             accumulatedText = "";
             check addDocumentPart(insertion, parts);
-        } else if insertion is ai:Document[] {
+        } else if insertion is (ai:Document|ai:Chunk)[] {
             addTextPart(accumulatedText, parts);
             accumulatedText = "";
-            foreach ai:Document doc in insertion {
+            foreach ai:Document|ai:Chunk doc in insertion {
                 check addDocumentPart(doc, parts);
             }
         } else {
@@ -535,7 +535,7 @@ isolated function addTextPart(string content, VertexAiPart[] parts) {
     }
 }
 
-isolated function addDocumentPart(ai:Document doc, VertexAiPart[] parts) returns ai:Error? {
+isolated function addDocumentPart(ai:Document|ai:Chunk doc, VertexAiPart[] parts) returns ai:Error? {
     if doc is ai:TextDocument|ai:TextChunk {
         addTextPart(doc.content, parts);
         return;
