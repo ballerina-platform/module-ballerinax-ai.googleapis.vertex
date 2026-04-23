@@ -1,7 +1,7 @@
 [package]
 authors = ["Ballerina"]
 distribution = "2201.12.0"
-keywords = ["Agent", "Model Provider", "Vendor/Google", "Area/AI"]
+keywords = ["Agent", "Model Provider", "Embedding Provider", "Vendor/Google", "Area/AI & Machine Learning", "Type/Connector"]
 license = ["Apache-2.0"]
 icon = "icon.png"
 name = "ai.googleapis.vertex"
@@ -16,4 +16,4 @@ graalvmCompatible = true
 groupId = "io.ballerina.lib"
 artifactId = "ai.googleapis.vertex-native"
 version = "1.0.0"
-path = "../native/build/libs/ai.googleapis.vertex-native-1.0.0-SNAPSHOT.jar"
+path = "../native/build/libs/ai.googleapis.vertex-native-1.0.0.jar"
