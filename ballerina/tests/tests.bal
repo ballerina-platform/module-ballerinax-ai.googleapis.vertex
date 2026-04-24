@@ -93,6 +93,23 @@ function testGenerateMethodWithTextDocument() returns ai:Error? {
 }
 
 @test:Config
+function testGenerateMethodWithTextChunk() returns error? {
+    ModelProvider p = <ModelProvider>provider;
+    ai:TextChunk chunk = {
+        content: string `Title: ${blog1.title} Content: ${blog1.content}`
+    };
+    ai:TextChunk[] chunks = [chunk, chunk];
+    int maxScore = 10;
+
+    int rating = check p->generate(`How would you rate this text chunk content out of ${maxScore}. ${chunk}.`);
+    test:assertEquals(rating, 4);
+
+    Review r = check review.fromJsonStringWithType(Review);
+    Review[] result = check p->generate(`How would you rate these text chunks out of ${maxScore}. ${chunks}. Thank you!`);
+    test:assertEquals(result, [r, r]);
+}
+
+@test:Config
 function testGenerateMethodWithStringUnionNull() returns error? {
     ModelProvider p = <ModelProvider>provider;
     string? result = check p->generate(`Give me a random joke`);
