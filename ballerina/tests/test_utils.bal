@@ -32,6 +32,12 @@ isolated function getExpectedParameterSchema(string message) returns map<json> {
     if message.startsWith("Tell me") {
         return expectedParameterSchemaStringForRateBlog4;
     }
+    if message.startsWith("How would you rate these text chunks") {
+        return expectedParameterSchemaStringForRateBlog5;
+    }
+    if message.startsWith("How would you rate this text chunk") {
+        return expectedParameterSchemaStringForRateBlog;
+    }
     if message.startsWith("How would you rate this") {
         return expectedParameterSchemaStringForRateBlog;
     }
@@ -68,6 +74,12 @@ isolated function getTheMockLLMResult(string message) returns string {
     }
     if message.startsWith("Which country") {
         return "{\"result\": \"Sri Lanka\"}";
+    }
+    if message.startsWith("How would you rate these text chunks") {
+        return string `{"result": [${review}, ${review}]}`;
+    }
+    if message.startsWith("How would you rate this text chunk") {
+        return "{\"result\": 4}";
     }
     if message.startsWith("How would you rate this") {
         return "{\"result\": 4}";
