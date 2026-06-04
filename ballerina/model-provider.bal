@@ -21,7 +21,7 @@ import ballerina/io;
 import ballerina/jballerina.java;
 import ballerina/time;
 
-const DEFAULT_MAX_TOKEN_COUNT = 512;
+const DEFAULT_MAX_TOKEN_COUNT = 4096;
 
 # ModelProvider is a client class that provides an interface for interacting with
 # models hosted on Google Vertex AI, including Google Gemini models and partner
