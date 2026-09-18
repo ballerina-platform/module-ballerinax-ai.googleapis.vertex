@@ -245,10 +245,10 @@ public isolated distinct client class ModelProvider {
     # + messages - List of chat messages or a single user message
     # + tools - Tool definitions to be used for tool calling
     # + stop - Stop sequence to stop the completion
-    # + return - A stream of chat completion chunks, or an error if the request fails
-    remote function chatStream(ai:ChatMessage[]|ai:ChatUserMessage messages,
+    # + return - A stream of chat message chunks, or an error if the request fails
+    remote function chatAsStream(ai:ChatMessage[]|ai:ChatUserMessage messages,
             ai:ChatCompletionFunctions[] tools = [], string? stop = ())
-            returns stream<ai:ChatCompletionChunk, ai:Error?>|ai:Error {
+            returns stream<ai:ChatMessageChunk, ai:Error?>|ai:Error {
         observe:ChatSpan span = observe:createChatSpan(self.modelType);
         span.addProvider(self.publisher);
         decimal? temp = self.temperature;
@@ -276,7 +276,7 @@ public isolated distinct client class ModelProvider {
             headers["Authorization"] = string `Bearer ${accessToken}`;
         }
 
-        stream<ai:ChatCompletionChunk, ai:Error?>|ai:Error result;
+        stream<ai:ChatMessageChunk, ai:Error?>|ai:Error result;
         if self.publisher == ANTHROPIC {
             string path = buildStreamPath(self.projectId, self.location, self.modelType, self.publisher);
             result = self.chatStreamAnthropic(messages, tools, stop, path, headers, span);
@@ -297,17 +297,19 @@ public isolated distinct client class ModelProvider {
         return result;
     }
 
-    # Sends a streaming prompt to the model and streams back the generated text.
-    # Only `string` is supported as the expected type.
+    # Sends a streaming prompt to the model and streams back the generated answer as text
+    # fragments. Streaming produces text only: structured types have no valid intermediate
+    # state, so use `generate` for structured output.
     #
     # + prompt - The prompt to use in the request
-    # + td - The expected type of the streamed value; must be `string`
-    # + return - A stream of the generated value, or an error if the type is unsupported
-    remote function generateStream(ai:Prompt prompt,
-            @display {label: "Expected type"} typedesc<anydata> td = <>)
-            returns stream<td, ai:Error?>|ai:Error = @java:Method {
-        'class: "io.ballerina.lib.ai.googleapis.vertex.StreamGenerator"
-    } external;
+    # + return - A stream of text fragments, or an error if the request fails
+    remote function generateAsStream(ai:Prompt prompt) returns stream<string, ai:Error?>|ai:Error {
+        stream<ai:ChatMessageChunk, ai:Error?>|ai:Error chunks = self->chatAsStream({role: ai:USER, content: prompt});
+        if chunks is ai:Error {
+            return chunks;
+        }
+        return new stream<string, ai:Error?>(new ChunkTextIterator(chunks));
+    }
 
     // ── Private publisher-specific chat implementations ───────────────────────
 
@@ -435,7 +437,7 @@ public isolated distinct client class ModelProvider {
 
     private function chatStreamGemini(ai:ChatMessage[]|ai:ChatUserMessage messages,
             ai:ChatCompletionFunctions[] tools, string? stop, string path, map<string> headers,
-            observe:ChatSpan span) returns stream<ai:ChatCompletionChunk, ai:Error?>|ai:Error {
+            observe:ChatSpan span) returns stream<ai:ChatMessageChunk, ai:Error?>|ai:Error {
         var [contents, systemInstruction] = check convertMessagesToVertexAiContents(messages);
 
         VertexAiGenerationConfig generationConfig = {maxOutputTokens: self.maxTokens};
@@ -463,13 +465,13 @@ public isolated distinct client class ModelProvider {
         if sseStream is ai:Error {
             return sseStream;
         }
-        stream<ai:ChatCompletionChunk, ai:Error?> chunkStream = new (new GeminiChunkIterator(sseStream, span));
+        stream<ai:ChatMessageChunk, ai:Error?> chunkStream = new (new GeminiChunkIterator(sseStream, span));
         return chunkStream;
     }
 
     private function chatStreamAnthropic(ai:ChatMessage[]|ai:ChatUserMessage messages,
             ai:ChatCompletionFunctions[] tools, string? stop, string path, map<string> headers,
-            observe:ChatSpan span) returns stream<ai:ChatCompletionChunk, ai:Error?>|ai:Error {
+            observe:ChatSpan span) returns stream<ai:ChatMessageChunk, ai:Error?>|ai:Error {
         var [anthropicMessages, systemPrompt] = check convertMessagesToAnthropicMessages(messages);
 
         AnthropicTool[] anthropicTools = mapToAnthropicTools(tools);
@@ -483,13 +485,13 @@ public isolated distinct client class ModelProvider {
         if sseStream is ai:Error {
             return sseStream;
         }
-        stream<ai:ChatCompletionChunk, ai:Error?> chunkStream = new (new AnthropicChunkIterator(sseStream, span));
+        stream<ai:ChatMessageChunk, ai:Error?> chunkStream = new (new AnthropicChunkIterator(sseStream, span));
         return chunkStream;
     }
 
     private function chatStreamOpenAiCompat(ai:ChatMessage[]|ai:ChatUserMessage messages,
             ai:ChatCompletionFunctions[] tools, string? stop, string path, map<string> headers,
-            observe:ChatSpan span) returns stream<ai:ChatCompletionChunk, ai:Error?>|ai:Error {
+            observe:ChatSpan span) returns stream<ai:ChatMessageChunk, ai:Error?>|ai:Error {
         MistralMessage[]|ai:Error mistralMessages = convertMessagesToMistralMessages(messages);
         if mistralMessages is ai:Error {
             return mistralMessages;
@@ -511,16 +513,17 @@ public isolated distinct client class ModelProvider {
         if sseStream is ai:Error {
             return sseStream;
         }
-        stream<ai:ChatCompletionChunk, ai:Error?> chunkStream = new (new OpenAiCompatChunkIterator(sseStream, span));
+        stream<ai:ChatMessageChunk, ai:Error?> chunkStream = new (new OpenAiCompatChunkIterator(sseStream, span));
         return chunkStream;
     }
 }
 
 # Iterator that converts Vertex AI Gemini's Server-Sent Event stream into a stream of
-# normalized `ai:ChatCompletionChunk` values. Each `data:` line is parsed as a partial
-# `VertexAiResponse` and mapped via `toAiChunkGemini`; blank lines are skipped and the
-# chat span is closed once the stream is done. Gemini has no `[DONE]` sentinel - the
-# stream simply closes when generation finishes.
+# normalized `ai:ChatMessageChunk` values. Each `data:` line is parsed as a partial
+# `VertexAiResponse` and mapped via `toAiChunkGemini`, which returns `()` for an event
+# that carries nothing for the caller (e.g. a candidate with no text, tool call, or finish
+# reason); blank lines are skipped and the chat span is closed once the stream is done.
+# Gemini has no `[DONE]` sentinel - the stream simply closes when generation finishes.
 #
 # A frame that cannot be parsed is reported as an error rather than skipped: Vertex emits
 # `{"error": {...}}` mid-stream when a generation is cut short, and skipping it would end
@@ -543,7 +546,7 @@ class GeminiChunkIterator {
         self.span = span;
     }
 
-    public isolated function next() returns record {|ai:ChatCompletionChunk value;|}|ai:Error? {
+    public isolated function next() returns record {|ai:ChatMessageChunk value;|}|ai:Error? {
         if self.isDone() {
             return ();
         }
@@ -578,8 +581,12 @@ class GeminiChunkIterator {
                 return self.failStream(error ai:LlmInvalidResponseError(
                         "Unexpected chunk shape received from the model", wireChunk));
             }
+            self.recordUsage(wireChunk);
             var [chunk, nextIndex] = toAiChunkGemini(wireChunk, self.getNextToolCallIndex());
             self.setNextToolCallIndex(nextIndex);
+            if chunk is () {
+                continue;
+            }
             self.recordChunk(chunk);
             return {value: chunk};
         }
@@ -596,8 +603,24 @@ class GeminiChunkIterator {
         return ();
     }
 
-    private isolated function recordChunk(ai:ChatCompletionChunk chunk) {
+    private isolated function recordChunk(ai:ChatMessageChunk chunk) {
         recordChunkOnSpan(self.span, chunk);
+    }
+
+    // Vertex reports token usage on the raw wire chunk, not on `ai:ChatMessageChunk`, so it
+    // is pushed onto the span directly from `w` rather than through the mapped chunk.
+    private isolated function recordUsage(VertexAiResponse w) {
+        VertexAiUsageMetadata? usage = w.usageMetadata;
+        if usage is VertexAiUsageMetadata {
+            int? promptTokens = usage.promptTokenCount;
+            if promptTokens is int {
+                self.span.addInputTokenCount(promptTokens);
+            }
+            int? completionTokens = usage.candidatesTokenCount;
+            if completionTokens is int {
+                self.span.addOutputTokenCount(completionTokens);
+            }
+        }
     }
 
     private isolated function finish() returns () {
@@ -644,11 +667,13 @@ class GeminiChunkIterator {
 }
 
 # Iterator that converts the Anthropic (on Vertex `:streamRawPredict`) Server-Sent Event
-# stream into a stream of normalized `ai:ChatCompletionChunk` values. Each event is parsed
-# into an `AnthropicStreamEvent` and mapped via `toAiChunkAnthropicEvent`; the prompt token
-# count captured from `message_start` is threaded through so the `message_delta` chunk can
-# report full usage. The stream ends on `message_stop` or when the underlying SSE stream
-# closes, and the chat span is closed once it does.
+# stream into a stream of normalized `ai:ChatMessageChunk` values. Each event is parsed
+# into an `AnthropicStreamEvent` and mapped via `toAiChunkAnthropicEvent`. `message_start`
+# and `message_delta` carry the message id and token usage respectively; since neither
+# field exists on `ai:ChatMessageChunk`, they are read off the raw event here and pushed
+# onto the span directly, and the captured id is stamped onto every subsequent chunk. The
+# stream ends on `message_stop` or when the underlying SSE stream closes, and the chat span
+# is closed once it does.
 #
 # An `error` event carries the failure Anthropic reports mid-stream (an overload, an
 # aborted generation); its `type` and `message` are surfaced so an overload is
@@ -658,14 +683,14 @@ class AnthropicChunkIterator {
     private stream<http:SseEvent, error?> sseStream;
     private observe:ChatSpan span;
     private boolean done = false;
-    private int? promptTokens = ();
+    private string? responseId = ();
 
     isolated function init(stream<http:SseEvent, error?> sseStream, observe:ChatSpan span) {
         self.sseStream = sseStream;
         self.span = span;
     }
 
-    public isolated function next() returns record {|ai:ChatCompletionChunk value;|}|ai:Error? {
+    public isolated function next() returns record {|ai:ChatMessageChunk value;|}|ai:Error? {
         if self.isDone() {
             return ();
         }
@@ -700,10 +725,18 @@ class AnthropicChunkIterator {
                         string `Error received mid-stream from the model: ${describeAnthropicStreamError(wireEvent)}`));
             }
             if wireEvent.'type == "message_start" {
-                self.setPromptTokens(wireEvent.message?.usage?.input_tokens);
+                self.recordMessageStart(wireEvent);
+                continue;
             }
-            ai:ChatCompletionChunk? chunk = toAiChunkAnthropicEvent(wireEvent, self.getPromptTokens());
-            if chunk is ai:ChatCompletionChunk {
+            if wireEvent.'type == "message_delta" {
+                self.recordOutputTokens(wireEvent);
+            }
+            ai:ChatMessageChunk? chunk = toAiChunkAnthropicEvent(wireEvent);
+            if chunk is ai:ChatMessageChunk {
+                string? id = self.getResponseId();
+                if id is string {
+                    chunk.id = id;
+                }
                 self.recordChunk(chunk);
                 return {value: chunk};
             }
@@ -724,8 +757,28 @@ class AnthropicChunkIterator {
         return ();
     }
 
-    private isolated function recordChunk(ai:ChatCompletionChunk chunk) {
+    private isolated function recordChunk(ai:ChatMessageChunk chunk) {
         recordChunkOnSpan(self.span, chunk);
+    }
+
+    // Captures the message id and prompt token count carried by `message_start`, pushing
+    // the prompt tokens straight onto the span since `message_start` maps to no chunk.
+    private isolated function recordMessageStart(AnthropicStreamEvent event) {
+        string? id = event.message?.id;
+        if id is string {
+            self.setResponseId(id);
+        }
+        int? promptTokens = event.message?.usage?.input_tokens;
+        if promptTokens is int {
+            self.span.addInputTokenCount(promptTokens);
+        }
+    }
+
+    private isolated function recordOutputTokens(AnthropicStreamEvent event) {
+        int? completionTokens = event.usage?.output_tokens;
+        if completionTokens is int {
+            self.span.addOutputTokenCount(completionTokens);
+        }
     }
 
     private isolated function finish() returns () {
@@ -743,16 +796,17 @@ class AnthropicChunkIterator {
         return err;
     }
 
-    private isolated function getPromptTokens() returns int? {
+    private isolated function getResponseId() returns string? {
         lock {
-            return self.promptTokens;
+            return self.responseId;
         }
     }
 
-    private isolated function setPromptTokens(int? promptTokens) {
+    private isolated function setResponseId(string responseId) {
         lock {
-            self.promptTokens = promptTokens;
+            self.responseId = responseId;
         }
+        self.span.addResponseId(responseId);
     }
 
     private isolated function isDone() returns boolean {
@@ -773,9 +827,10 @@ class AnthropicChunkIterator {
 
 # Iterator that converts a streamed OpenAI-compatible Server-Sent Event stream (used by the
 # Mistral `:streamRawPredict` endpoint and the open-models `openapi/chat/completions`
-# endpoint) into a stream of normalized `ai:ChatCompletionChunk` values. Each `data:` line is
-# parsed into the wire chunk and mapped via `toAiChunkOpenAiCompat`; the terminating `[DONE]`
-# sentinel ends the stream, blank lines are skipped, and the chat span is closed once done.
+# endpoint) into a stream of normalized `ai:ChatMessageChunk` values. Each `data:` line is
+# parsed into the wire chunk and mapped via `toAiChunkOpenAiCompat`, which returns `()` for
+# a chunk that carries nothing for the caller; the terminating `[DONE]` sentinel ends the
+# stream, blank lines are skipped, and the chat span is closed once done.
 #
 # A frame that cannot be parsed is reported as an error rather than skipped, so a
 # generation cut short mid-stream never reaches the caller as a clean, truncated answer.
@@ -789,7 +844,7 @@ class OpenAiCompatChunkIterator {
         self.span = span;
     }
 
-    public isolated function next() returns record {|ai:ChatCompletionChunk value;|}|ai:Error? {
+    public isolated function next() returns record {|ai:ChatMessageChunk value;|}|ai:Error? {
         if self.isDone() {
             return ();
         }
@@ -827,7 +882,11 @@ class OpenAiCompatChunkIterator {
                 return self.failStream(error ai:LlmInvalidResponseError(
                         "Unexpected chunk shape received from the model", wireChunk));
             }
-            ai:ChatCompletionChunk chunk = toAiChunkOpenAiCompat(wireChunk);
+            self.recordUsage(wireChunk);
+            ai:ChatMessageChunk? chunk = toAiChunkOpenAiCompat(wireChunk);
+            if chunk is () {
+                continue;
+            }
             self.recordChunk(chunk);
             return {value: chunk};
         }
@@ -844,8 +903,26 @@ class OpenAiCompatChunkIterator {
         return ();
     }
 
-    private isolated function recordChunk(ai:ChatCompletionChunk chunk) {
+    private isolated function recordChunk(ai:ChatMessageChunk chunk) {
         recordChunkOnSpan(self.span, chunk);
+    }
+
+    // The OpenAI-compatible wire format reports token usage on the raw chunk, not on
+    // `ai:ChatMessageChunk`, so it is pushed onto the span directly from `w`. A chunk may
+    // carry usage alongside a finish reason, or alone (the final chunk sent when
+    // `stream_options: { include_usage: true }` is set), so this runs for every chunk.
+    private isolated function recordUsage(MistralStreamChunk w) {
+        MistralUsage? usage = w.usage;
+        if usage is MistralUsage {
+            int? promptTokens = usage.prompt_tokens;
+            if promptTokens is int {
+                self.span.addInputTokenCount(promptTokens);
+            }
+            int? completionTokens = usage.completion_tokens;
+            if completionTokens is int {
+                self.span.addOutputTokenCount(completionTokens);
+            }
+        }
     }
 
     private isolated function finish() returns () {
@@ -879,29 +956,21 @@ class OpenAiCompatChunkIterator {
     }
 }
 
-# Records the finish reason and token usage a completed streaming chunk carries onto the
+# Records the response id and finish reason a completed streaming chunk carries onto the
 # chat span, so streamed generations report the same trace attributes as `chat()` does.
+# Token usage is reported separately by each iterator, straight from the provider's raw
+# wire format, since `ai:ChatMessageChunk` carries no usage field.
 #
 # + span - The chat span for the streaming request
 # + chunk - The normalized chunk just yielded to the caller
-isolated function recordChunkOnSpan(observe:ChatSpan span, ai:ChatCompletionChunk chunk) {
-    ai:ChatCompletionChunkChoice[] choices = chunk.choices;
-    if choices.length() > 0 {
-        ai:FinishReason? finishReason = choices[0].finishReason;
-        if finishReason is ai:FinishReason {
-            span.addFinishReason(finishReason);
-            span.addOutputType(observe:TEXT);
-        }
+isolated function recordChunkOnSpan(observe:ChatSpan span, ai:ChatMessageChunk chunk) {
+    string? id = chunk.id;
+    if id is string {
+        span.addResponseId(id);
     }
-    ai:CompletionTokenUsage? usage = chunk?.usage;
-    if usage is ai:CompletionTokenUsage {
-        int? promptTokens = usage?.promptTokens;
-        if promptTokens is int {
-            span.addInputTokenCount(promptTokens);
-        }
-        int? completionTokens = usage?.completionTokens;
-        if completionTokens is int {
-            span.addOutputTokenCount(completionTokens);
-        }
+    ai:FinishReason? finishReason = chunk.finishReason;
+    if finishReason is ai:FinishReason {
+        span.addFinishReason(finishReason);
+        span.addOutputType(observe:TEXT);
     }
 }

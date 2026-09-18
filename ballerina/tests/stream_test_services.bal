@@ -20,7 +20,7 @@ import ballerina/test;
 // ── Streaming mock services ─────────────────────────────────────────────────
 // Each service below returns a canned Server-Sent Event stream in the exact
 // wire format the corresponding publisher's real streaming endpoint emits, so
-// chatStream()/generateStream() and their iterators/toAiChunk* mapping
+// chatAsStream()/generateAsStream() and their iterators/toAiChunk* mapping
 // functions are exercised end-to-end without a live API key. Scenarios are
 // split across dedicated ports (rather than branching on request content) to
 // keep each mock service trivial to read.
@@ -336,6 +336,98 @@ service /llm/vertexai on new http:Listener(8093) {
             OPEN_MODEL_TEXT_CHUNK_1.toJsonString(),
             OPEN_MODEL_TEXT_CHUNK_2.toJsonString(),
             OPEN_MODEL_TEXT_CHUNK_FINAL.toJsonString(),
+            "[DONE]"
+        ]);
+    }
+}
+
+// ── Anthropic streaming (reasoning) — port 8103 ────────────────────────────
+// A `thinking` block streams `thinking_delta` fragments ahead of the `text` block's
+// `text_delta` fragments; both must land on their own `ChatMessageChunk` field.
+final json ANTH_REASONING_MSG_START = {
+    "type": "message_start",
+    "message": {"id": "msg-stream-reasoning", "usage": {"input_tokens": 12}}
+};
+final json ANTH_REASONING_BLOCK_START = {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}};
+final json ANTH_REASONING_DELTA_1 = {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {"type": "thinking_delta", "thinking": "The user"}
+};
+final json ANTH_REASONING_DELTA_2 = {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {"type": "thinking_delta", "thinking": " wants a greeting."}
+};
+final json ANTH_REASONING_BLOCK_STOP = {"type": "content_block_stop", "index": 0};
+final json ANTH_REASONING_TEXT_BLOCK_START = {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}};
+final json ANTH_REASONING_TEXT_DELTA = {
+    "type": "content_block_delta",
+    "index": 1,
+    "delta": {"type": "text_delta", "text": "Hello!"}
+};
+final json ANTH_REASONING_TEXT_BLOCK_STOP = {"type": "content_block_stop", "index": 1};
+final json ANTH_REASONING_MSG_DELTA = {
+    "type": "message_delta",
+    "delta": {"stop_reason": "end_turn"},
+    "usage": {"output_tokens": 9}
+};
+final json ANTH_REASONING_MSG_STOP = {"type": "message_stop"};
+
+service /llm/vertexai on new http:Listener(8103) {
+    resource function post v1/projects/[string projectId]/locations/[string location]/publishers/anthropic/models/[string modelId](
+            @http:Header {name: "Authorization"} string authHeader,
+            @http:Payload json payload) returns stream<http:SseEvent, error?> {
+        assertBearerAuth(authHeader);
+        assertStreamAction(modelId, ":streamRawPredict");
+        assertStreamFlag(payload);
+        return toSseStream([
+            ANTH_REASONING_MSG_START.toJsonString(),
+            ANTH_REASONING_BLOCK_START.toJsonString(),
+            ANTH_REASONING_DELTA_1.toJsonString(),
+            ANTH_REASONING_DELTA_2.toJsonString(),
+            ANTH_REASONING_BLOCK_STOP.toJsonString(),
+            ANTH_REASONING_TEXT_BLOCK_START.toJsonString(),
+            ANTH_REASONING_TEXT_DELTA.toJsonString(),
+            ANTH_REASONING_TEXT_BLOCK_STOP.toJsonString(),
+            ANTH_REASONING_MSG_DELTA.toJsonString(),
+            ANTH_REASONING_MSG_STOP.toJsonString()
+        ]);
+    }
+}
+
+// ── Open-model streaming (reasoning) — port 8104 ───────────────────────────
+// DeepSeek-R1-style reasoning models stream `reasoning_content` fragments ahead of the
+// `content` fragments, both as deltas on the same (only) choice.
+final json OPEN_MODEL_REASONING_CHUNK_1 = {
+    "id": "chatcmpl-open-reasoning",
+    "choices": [{"index": 0, "delta": {"reasoning_content": "Thinking"}}]
+};
+final json OPEN_MODEL_REASONING_CHUNK_2 = {
+    "id": "chatcmpl-open-reasoning",
+    "choices": [{"index": 0, "delta": {"reasoning_content": " it over."}}]
+};
+final json OPEN_MODEL_REASONING_TEXT_CHUNK = {
+    "id": "chatcmpl-open-reasoning",
+    "choices": [{"index": 0, "delta": {"content": "Hi there!"}}]
+};
+final json OPEN_MODEL_REASONING_FINAL_CHUNK = {
+    "id": "chatcmpl-open-reasoning",
+    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 6, "completion_tokens": 9}
+};
+
+service /llm/vertexai on new http:Listener(8104) {
+    resource function post v1beta1/projects/[string projectId]/locations/[string location]/endpoints/openapi/chat/completions(
+            @http:Header {name: "Authorization"} string authHeader,
+            @http:Payload json payload) returns stream<http:SseEvent, error?> {
+        assertBearerAuth(authHeader);
+        assertUsageOptIn(payload);
+        return toSseStream([
+            OPEN_MODEL_REASONING_CHUNK_1.toJsonString(),
+            OPEN_MODEL_REASONING_CHUNK_2.toJsonString(),
+            OPEN_MODEL_REASONING_TEXT_CHUNK.toJsonString(),
+            OPEN_MODEL_REASONING_FINAL_CHUNK.toJsonString(),
             "[DONE]"
         ]);
     }

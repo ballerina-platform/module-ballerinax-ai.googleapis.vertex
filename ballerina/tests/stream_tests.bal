@@ -18,15 +18,16 @@ import ballerina/ai;
 import ballerina/test;
 
 // ── Streaming test suite ────────────────────────────────────────────────────
-// Exercises chatStream() and generateStream() against the mock SSE services in
+// Exercises chatAsStream() and generateAsStream() against the mock SSE services in
 // stream_test_services.bal, covering all four publisher wire formats this
 // module supports: Gemini (native), Anthropic (Messages API events), Mistral
 // (OpenAI-compatible chunks via rawPredict), and the shared open-models
 // endpoint (OpenAI-compatible chunks, DeepSeek used as the representative
 // publisher). Each publisher is checked for: incremental text streaming,
-// finish-reason/usage mapping, tool-call id/name/argument-fragment streaming
-// (accumulated by index, matching how a real agent loop would consume it),
-// and the generateStream text projection.
+// `role` present on every chunk, finish-reason mapping, tool-call
+// id/name/argument-fragment streaming (accumulated by index, matching how a
+// real agent loop would consume it), reasoning/thinking streaming where the
+// wire format supports it, and the generateAsStream text projection.
 
 const GEMINI_STREAM_TEXT_URL = "http://localhost:8090/llm/vertexai";
 const GEMINI_STREAM_TOOL_URL = "http://localhost:8094/llm/vertexai";
@@ -35,14 +36,18 @@ const ANTHROPIC_STREAM_TOOL_URL = "http://localhost:8095/llm/vertexai";
 const MISTRAL_STREAM_TEXT_URL = "http://localhost:8092/llm/vertexai";
 const MISTRAL_STREAM_TOOL_URL = "http://localhost:8096/llm/vertexai";
 const OPEN_MODEL_STREAM_TEXT_URL = "http://localhost:8093/llm/vertexai";
+const ANTHROPIC_STREAM_REASONING_URL = "http://localhost:8103/llm/vertexai";
+const OPEN_MODEL_STREAM_REASONING_URL = "http://localhost:8104/llm/vertexai";
 
 ModelProvider? geminiStreamTextProvider = ();
 ModelProvider? geminiStreamToolProvider = ();
 ModelProvider? anthropicStreamTextProvider = ();
 ModelProvider? anthropicStreamToolProvider = ();
+ModelProvider? anthropicStreamReasoningProvider = ();
 ModelProvider? mistralStreamTextProvider = ();
 ModelProvider? mistralStreamToolProvider = ();
 ModelProvider? openModelStreamTextProvider = ();
+ModelProvider? openModelStreamReasoningProvider = ();
 
 @test:BeforeSuite
 function initStreamProviders() returns error? {
@@ -52,12 +57,16 @@ function initStreamProviders() returns error? {
         check new (TEST_AUTH, PROJECT_ID, "anthropic/claude-test-model", LOCATION, ANTHROPIC_STREAM_TEXT_URL);
     anthropicStreamToolProvider =
         check new (TEST_AUTH, PROJECT_ID, "anthropic/claude-test-model", LOCATION, ANTHROPIC_STREAM_TOOL_URL);
+    anthropicStreamReasoningProvider =
+        check new (TEST_AUTH, PROJECT_ID, "anthropic/claude-test-model", LOCATION, ANTHROPIC_STREAM_REASONING_URL);
     mistralStreamTextProvider =
         check new (TEST_AUTH, PROJECT_ID, "mistralai/mistral-test-model", LOCATION, MISTRAL_STREAM_TEXT_URL);
     mistralStreamToolProvider =
         check new (TEST_AUTH, PROJECT_ID, "mistralai/mistral-test-model", LOCATION, MISTRAL_STREAM_TOOL_URL);
     openModelStreamTextProvider =
         check new (TEST_AUTH, PROJECT_ID, "deepseek-ai/deepseek-test-model", LOCATION, OPEN_MODEL_STREAM_TEXT_URL);
+    openModelStreamReasoningProvider = check new (TEST_AUTH, PROJECT_ID, "deepseek-ai/deepseek-test-model", LOCATION,
+        OPEN_MODEL_STREAM_REASONING_URL);
 }
 
 // ── Shared stream-collection helpers ────────────────────────────────────────
@@ -70,9 +79,10 @@ type AccumulatedToolCall record {|
 
 type StreamResult record {|
     string text = "";
+    string reasoning = "";
     int chunkCount = 0;
+    boolean everyChunkHasAssistantRole = true;
     ai:FinishReason? finishReason = ();
-    ai:CompletionTokenUsage? usage = ();
     map<AccumulatedToolCall> toolCalls = {};
 |};
 
@@ -90,56 +100,51 @@ final ai:ChatCompletionFunctions WEATHER_TOOL = {
 // `check from ... in chunks` pipeline surfaces the *cause* of a stream error instead of
 // the error itself, so the `ai:` error type the connector reports would be lost here and
 // the failure-path assertions below could not tell one failure from another.
-isolated function collectStream(stream<ai:ChatCompletionChunk, ai:Error?> chunks) returns StreamResult|ai:Error {
+isolated function collectStream(stream<ai:ChatMessageChunk, ai:Error?> chunks) returns StreamResult|ai:Error {
     StreamResult result = {};
     while true {
-        record {|ai:ChatCompletionChunk value;|}|ai:Error? next = chunks.next();
+        record {|ai:ChatMessageChunk value;|}|ai:Error? next = chunks.next();
         if next is () {
             break;
         }
         if next is ai:Error {
             return next;
         }
-        ai:ChatCompletionChunk chunk = next.value;
-        {
-            result.chunkCount += 1;
-            if chunk.choices.length() > 0 {
-                ai:ChatCompletionChunkChoice choice = chunk.choices[0];
-                string? fragment = choice.delta.content;
-                if fragment is string {
-                    result.text += fragment;
+        ai:ChatMessageChunk chunk = next.value;
+        result.chunkCount += 1;
+        if chunk.role != ai:ASSISTANT {
+            result.everyChunkHasAssistantRole = false;
+        }
+        string? contentFragment = chunk.content;
+        if contentFragment is string {
+            result.text += contentFragment;
+        }
+        string? reasoningFragment = chunk.reasoning;
+        if reasoningFragment is string {
+            result.reasoning += reasoningFragment;
+        }
+        ai:FinishReason? reason = chunk.finishReason;
+        if reason is ai:FinishReason {
+            result.finishReason = reason;
+        }
+        ai:ToolCallChunk[]? toolCallChunks = chunk.toolCalls;
+        if toolCallChunks is ai:ToolCallChunk[] {
+            foreach ai:ToolCallChunk tc in toolCallChunks {
+                string key = tc.index.toString();
+                AccumulatedToolCall acc = result.toolCalls[key] ?: {};
+                string? id = tc?.id;
+                if id is string {
+                    acc.id = id;
                 }
-                ai:FinishReason? reason = choice.finishReason;
-                if reason is ai:FinishReason {
-                    result.finishReason = reason;
+                string? name = tc?.name;
+                if name is string {
+                    acc.name = name;
                 }
-                ai:ToolCallChunk[]? toolCallChunks = choice.delta.toolCalls;
-                if toolCallChunks is ai:ToolCallChunk[] {
-                    foreach ai:ToolCallChunk tc in toolCallChunks {
-                        string key = tc.index.toString();
-                        AccumulatedToolCall acc = result.toolCalls[key] ?: {};
-                        string? id = tc?.id;
-                        if id is string {
-                            acc.id = id;
-                        }
-                        ai:FunctionCallChunk? fn = tc?.'function;
-                        if fn is ai:FunctionCallChunk {
-                            string? name = fn?.name;
-                            if name is string {
-                                acc.name = name;
-                            }
-                            string? args = fn?.arguments;
-                            if args is string {
-                                acc.args += args;
-                            }
-                        }
-                        result.toolCalls[key] = acc;
-                    }
+                string? args = tc?.arguments;
+                if args is string {
+                    acc.args += args;
                 }
-            }
-            ai:CompletionTokenUsage? u = chunk.usage;
-            if u is ai:CompletionTokenUsage {
-                result.usage = u;
+                result.toolCalls[key] = acc;
             }
         }
     }
@@ -168,23 +173,24 @@ isolated function collectText(stream<string, ai:Error?> fragments) returns strin
 @test:Config
 function testGeminiChatStreamText() returns error? {
     ModelProvider p = <ModelProvider>geminiStreamTextProvider;
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hello"}]);
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
     StreamResult result = check collectStream(chunks);
 
     test:assertEquals(result.text, "Hello, world!");
     test:assertEquals(result.finishReason, ai:STOP);
-    test:assertEquals(result.usage, {promptTokens: 5, completionTokens: 10, totalTokens: 15});
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
     test:assertTrue(result.chunkCount >= 3, "expected multiple incremental chunks");
 }
 
 @test:Config
 function testGeminiChatStreamToolCall() returns error? {
     ModelProvider p = <ModelProvider>geminiStreamToolProvider;
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream(
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream(
         [{role: ai:USER, content: "What is the weather in Colombo?"}], [WEATHER_TOOL]);
     StreamResult result = check collectStream(chunks);
 
     test:assertEquals(result.finishReason, ai:TOOL_CALLS);
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
     AccumulatedToolCall acc = check getToolCall(result, "0");
     test:assertEquals(acc.name, "get_weather");
     test:assertEquals(check parseArgs(acc.args), {"city": "Colombo"});
@@ -193,7 +199,7 @@ function testGeminiChatStreamToolCall() returns error? {
 @test:Config
 function testGeminiGenerateStream() returns error? {
     ModelProvider p = <ModelProvider>geminiStreamTextProvider;
-    stream<string, ai:Error?> fragments = check p->generateStream(`Say hello`);
+    stream<string, ai:Error?> fragments = check p->generateAsStream(`Say hello`);
     test:assertEquals(check collectText(fragments), "Hello, world!");
 }
 
@@ -202,23 +208,23 @@ function testGeminiGenerateStream() returns error? {
 @test:Config
 function testAnthropicChatStreamText() returns error? {
     ModelProvider p = <ModelProvider>anthropicStreamTextProvider;
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hello"}]);
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
     StreamResult result = check collectStream(chunks);
 
     test:assertEquals(result.text, "Hello, world!");
     test:assertEquals(result.finishReason, ai:STOP);
-    test:assertEquals(result.usage, {promptTokens: 10, completionTokens: 8, totalTokens: 18});
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
 }
 
 @test:Config
 function testAnthropicChatStreamToolCall() returns error? {
     ModelProvider p = <ModelProvider>anthropicStreamToolProvider;
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream(
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream(
         [{role: ai:USER, content: "What is the weather in Colombo?"}], [WEATHER_TOOL]);
     StreamResult result = check collectStream(chunks);
 
     test:assertEquals(result.finishReason, ai:TOOL_CALLS);
-    test:assertEquals(result.usage, {promptTokens: 15, completionTokens: 12, totalTokens: 27});
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
     AccumulatedToolCall acc = check getToolCall(result, "0");
     test:assertEquals(acc.id, "toolu_1");
     test:assertEquals(acc.name, "get_weather");
@@ -226,9 +232,21 @@ function testAnthropicChatStreamToolCall() returns error? {
 }
 
 @test:Config
+function testAnthropicChatStreamReasoning() returns error? {
+    ModelProvider p = <ModelProvider>anthropicStreamReasoningProvider;
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
+    StreamResult result = check collectStream(chunks);
+
+    test:assertEquals(result.reasoning, "The user wants a greeting.");
+    test:assertEquals(result.text, "Hello!");
+    test:assertEquals(result.finishReason, ai:STOP);
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
+}
+
+@test:Config
 function testAnthropicGenerateStream() returns error? {
     ModelProvider p = <ModelProvider>anthropicStreamTextProvider;
-    stream<string, ai:Error?> fragments = check p->generateStream(`Say hello`);
+    stream<string, ai:Error?> fragments = check p->generateAsStream(`Say hello`);
     test:assertEquals(check collectText(fragments), "Hello, world!");
 }
 
@@ -237,22 +255,23 @@ function testAnthropicGenerateStream() returns error? {
 @test:Config
 function testMistralChatStreamText() returns error? {
     ModelProvider p = <ModelProvider>mistralStreamTextProvider;
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hello"}]);
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
     StreamResult result = check collectStream(chunks);
 
     test:assertEquals(result.text, "Hello, world!");
     test:assertEquals(result.finishReason, ai:STOP);
-    test:assertEquals(result.usage, {promptTokens: 5, completionTokens: 10});
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
 }
 
 @test:Config
 function testMistralChatStreamToolCall() returns error? {
     ModelProvider p = <ModelProvider>mistralStreamToolProvider;
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream(
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream(
         [{role: ai:USER, content: "What is the weather in Colombo?"}], [WEATHER_TOOL]);
     StreamResult result = check collectStream(chunks);
 
     test:assertEquals(result.finishReason, ai:TOOL_CALLS);
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
     AccumulatedToolCall acc = check getToolCall(result, "0");
     test:assertEquals(acc.id, "call_1");
     test:assertEquals(acc.name, "get_weather");
@@ -262,44 +281,44 @@ function testMistralChatStreamToolCall() returns error? {
 @test:Config
 function testMistralGenerateStream() returns error? {
     ModelProvider p = <ModelProvider>mistralStreamTextProvider;
-    stream<string, ai:Error?> fragments = check p->generateStream(`Say hello`);
+    stream<string, ai:Error?> fragments = check p->generateAsStream(`Say hello`);
     test:assertEquals(check collectText(fragments), "Hello, world!");
 }
 
 // ── Open-model publishers (Meta/DeepSeek/Qwen/Kimi/MiniMax) ────────────────
 // These share both the request path and toAiChunkOpenAiCompat mapping with
-// Mistral (see stream_test_services.bal), so only the text scenario is
-// covered separately here; tool-call argument streaming through that shared
+// Mistral (see stream_test_services.bal), so only the text and reasoning scenarios
+// are covered separately here; tool-call argument streaming through that shared
 // mapping is already verified by testMistralChatStreamToolCall above.
 
 @test:Config
 function testOpenModelChatStreamText() returns error? {
     ModelProvider p = <ModelProvider>openModelStreamTextProvider;
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hi"}]);
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hi"}]);
     StreamResult result = check collectStream(chunks);
 
     test:assertEquals(result.text, "Hi there!");
     test:assertEquals(result.finishReason, ai:STOP);
-    test:assertEquals(result.usage, {promptTokens: 4, completionTokens: 6});
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
+}
+
+@test:Config
+function testOpenModelChatStreamReasoning() returns error? {
+    ModelProvider p = <ModelProvider>openModelStreamReasoningProvider;
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hi"}]);
+    StreamResult result = check collectStream(chunks);
+
+    test:assertEquals(result.reasoning, "Thinking it over.");
+    test:assertEquals(result.text, "Hi there!");
+    test:assertEquals(result.finishReason, ai:STOP);
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
 }
 
 @test:Config
 function testOpenModelGenerateStream() returns error? {
     ModelProvider p = <ModelProvider>openModelStreamTextProvider;
-    stream<string, ai:Error?> fragments = check p->generateStream(`Say hi`);
+    stream<string, ai:Error?> fragments = check p->generateAsStream(`Say hi`);
     test:assertEquals(check collectText(fragments), "Hi there!");
-}
-
-// ── generateStream type-gating ──────────────────────────────────────────────
-
-@test:Config
-function testGenerateStreamRejectsNonStringType() {
-    ModelProvider p = <ModelProvider>geminiStreamTextProvider;
-    stream<int, ai:Error?>|ai:Error result = p->generateStream(`Give me a number`);
-    test:assertTrue(result is ai:Error, "expected an error for a non-string generateStream type");
-    if result is ai:Error {
-        test:assertTrue(result.message().includes("only 'string'"), "unexpected error message: " + result.message());
-    }
 }
 
 // ── Assertion helpers ────────────────────────────────────────────────────────
@@ -334,23 +353,24 @@ const OPEN_MODEL_STREAM_USAGE_URL = "http://localhost:8102/llm/vertexai";
 @test:Config
 function testChatStreamSurfacesHttpErrorStatus() returns error? {
     ModelProvider p = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, GEMINI_STREAM_HTTP_ERROR_URL);
-    stream<ai:ChatCompletionChunk, ai:Error?>|ai:Error result = p->chatStream([{role: ai:USER, content: "Say hello"}]);
+    stream<ai:ChatMessageChunk, ai:Error?>|ai:Error result = p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
 
-    test:assertTrue(result is ai:Error, "a 429 from the model must fail chatStream, not open an empty stream");
+    test:assertTrue(result is ai:Error, "a 429 from the model must fail chatAsStream, not open an empty stream");
     if result is ai:Error {
         string message = result.message();
         test:assertTrue(message.includes("429"), "the status code must reach the caller: " + message);
         test:assertTrue(message.includes("Quota exceeded"),
                 "the model's own message must reach the caller: " + message);
+        test:assertTrue(result is ai:LlmConnectionError, "a rejected streaming request is a connection error");
     }
 }
 
-// The same check must guard generateStream, which opens the stream through chatStream.
+// The same check must guard generateAsStream, which opens the stream through chatAsStream.
 @test:Config
 function testGenerateStreamSurfacesHttpErrorStatus() returns error? {
     ModelProvider p = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, GEMINI_STREAM_HTTP_ERROR_URL);
-    stream<string, ai:Error?>|ai:Error result = p->generateStream(`Say hello`);
-    test:assertTrue(result is ai:Error, "a 429 from the model must fail generateStream");
+    stream<string, ai:Error?>|ai:Error result = p->generateAsStream(`Say hello`);
+    test:assertTrue(result is ai:Error, "a 429 from the model must fail generateAsStream");
 }
 
 // An `{"error": ...}` frame arriving mid-generation must fail the stream. Skipping it
@@ -359,7 +379,7 @@ function testGenerateStreamSurfacesHttpErrorStatus() returns error? {
 function testGeminiChatStreamFailsOnMidStreamErrorFrame() returns error? {
     ModelProvider p = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION,
         GEMINI_STREAM_MIDSTREAM_ERROR_URL);
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hello"}]);
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
     StreamResult|ai:Error result = collectStream(chunks);
 
     test:assertTrue(result is ai:Error, "a mid-stream error frame must not end the stream cleanly");
@@ -373,7 +393,7 @@ function testGeminiChatStreamFailsOnMidStreamErrorFrame() returns error? {
 @test:Config
 function testGeminiChatStreamFailsOnMalformedFrame() returns error? {
     ModelProvider p = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION, GEMINI_STREAM_MALFORMED_URL);
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hello"}]);
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
     StreamResult|ai:Error result = collectStream(chunks);
 
     test:assertTrue(result is ai:Error, "a malformed frame must fail the stream");
@@ -389,7 +409,7 @@ function testGeminiChatStreamFailsOnMalformedFrame() returns error? {
 function testAnthropicChatStreamSurfacesErrorEvent() returns error? {
     ModelProvider p = check new (TEST_AUTH, PROJECT_ID, "anthropic/claude-test-model", LOCATION,
         ANTHROPIC_STREAM_ERROR_EVENT_URL);
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hello"}]);
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
     StreamResult|ai:Error result = collectStream(chunks);
 
     test:assertTrue(result is ai:Error, "an Anthropic error event must fail the stream");
@@ -406,7 +426,7 @@ function testAnthropicChatStreamSurfacesErrorEvent() returns error? {
 function testGeminiChatStreamIndexesToolCallsAcrossChunks() returns error? {
     ModelProvider p = check new (TEST_AUTH, PROJECT_ID, GEMINI_2_0_FLASH, LOCATION,
         GEMINI_STREAM_PARALLEL_TOOL_URL);
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream(
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream(
         [{role: ai:USER, content: "Weather in Colombo and Kandy?"}], [WEATHER_TOOL]);
     StreamResult result = check collectStream(chunks);
 
@@ -417,17 +437,18 @@ function testGeminiChatStreamIndexesToolCallsAcrossChunks() returns error? {
     test:assertEquals(check parseArgs(second.args), {"city": "Kandy"});
 }
 
-// A usage-only final chunk carries no choices; it must still be mapped, and the
-// `total_tokens` the endpoint reports must be carried through rather than dropped.
+// A usage-only final chunk carries no choices; it must be skipped (not mapped to an empty
+// chunk), while the text that arrived before it still comes through untouched.
 @test:Config
-function testOpenModelChatStreamMapsUsageOnlyChunk() returns error? {
+function testOpenModelChatStreamSkipsUsageOnlyChunk() returns error? {
     ModelProvider p = check new (TEST_AUTH, PROJECT_ID, "deepseek-ai/deepseek-test-model", LOCATION,
         OPEN_MODEL_STREAM_USAGE_URL);
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hi"}]);
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hi"}]);
     StreamResult result = check collectStream(chunks);
 
     test:assertEquals(result.text, "Hi there!");
-    test:assertEquals(result.usage, {promptTokens: 4, completionTokens: 6, totalTokens: 10});
+    test:assertEquals(result.finishReason, ai:STOP);
+    test:assertTrue(result.everyChunkHasAssistantRole, "role must be ASSISTANT on every chunk");
 }
 
 // Closing the chunk stream must close the underlying SSE stream and release its
@@ -435,20 +456,20 @@ function testOpenModelChatStreamMapsUsageOnlyChunk() returns error? {
 @test:Config
 function testChatStreamCloseReleasesTheStream() returns error? {
     ModelProvider p = <ModelProvider>geminiStreamTextProvider;
-    stream<ai:ChatCompletionChunk, ai:Error?> chunks = check p->chatStream([{role: ai:USER, content: "Say hello"}]);
-    record {|ai:ChatCompletionChunk value;|}|ai:Error? first = chunks.next();
-    test:assertTrue(first is record {|ai:ChatCompletionChunk value;|}, "expected a first chunk");
+    stream<ai:ChatMessageChunk, ai:Error?> chunks = check p->chatAsStream([{role: ai:USER, content: "Say hello"}]);
+    record {|ai:ChatMessageChunk value;|}|ai:Error? first = chunks.next();
+    test:assertTrue(first is record {|ai:ChatMessageChunk value;|}, "expected a first chunk");
 
     check chunks.close();
     check chunks.close();
 }
 
-// generateStream's text projection wraps the chunk stream, so closing it has to reach
+// generateAsStream's text projection wraps the chunk stream, so closing it has to reach
 // through to the chat stream underneath rather than stopping at the wrapper.
 @test:Config
 function testGenerateStreamCloseReleasesTheStream() returns error? {
     ModelProvider p = <ModelProvider>geminiStreamTextProvider;
-    stream<string, ai:Error?> fragments = check p->generateStream(`Say hello`);
+    stream<string, ai:Error?> fragments = check p->generateAsStream(`Say hello`);
     record {|string value;|}|ai:Error? first = fragments.next();
     test:assertTrue(first is record {|string value;|}, "expected a first text fragment");
 

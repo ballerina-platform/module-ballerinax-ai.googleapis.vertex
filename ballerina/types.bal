@@ -141,6 +141,9 @@ public enum VertexAiEmbeddingModelNames {
 # Represents a single part of a Vertex AI content block.
 type VertexAiPart record {
     string text?;
+    // Marks `text` as a thinking/reasoning fragment rather than answer content,
+    // emitted by thinking-capable Gemini models when thinking is enabled.
+    boolean thought?;
     VertexAiBlob inlineData?;
     VertexAiFunctionCall functionCall?;
     VertexAiFunctionResponse functionResponse?;
@@ -436,17 +439,19 @@ type AnthropicStreamContentBlock record {
     string name?;
 };
 
-# The delta carried by `content_block_delta` (text_delta/input_json_delta) or
+# The delta carried by `content_block_delta` (text_delta/input_json_delta/thinking_delta) or
 # `message_delta` (stop_reason) events.
 #
-# + type - The delta type, `text_delta` or `input_json_delta`
+# + type - The delta type: `text_delta`, `input_json_delta`, `thinking_delta`, or `signature_delta`
 # + text - The answer text fragment; present on a `text_delta`
 # + partial_json - Incremental JSON fragment of the tool arguments; present on an `input_json_delta`
+# + thinking - The reasoning text fragment; present on a `thinking_delta`
 # + stop_reason - Reason the model stopped generating; present on `message_delta`
 type AnthropicStreamDelta record {
     string 'type?;
     string text?;
     string partial_json?;
+    string thinking?;
     string stop_reason?;
 };
 
@@ -482,10 +487,13 @@ type MistralStreamChoice record {
 #
 # + role - Role of the author of this message; only sent on the first delta
 # + content - The answer text fragment for this chunk
+# + reasoning_content - The reasoning/thinking text fragment for this chunk; emitted by
+#                        reasoning-capable open models such as DeepSeek-R1
 # + tool_calls - Incremental tool call fragments produced by the model
 type MistralChunkDelta record {
     string role?;
     string? content?;
+    string? reasoning_content?;
     MistralToolCallChunk[] tool_calls?;
 };
 
@@ -513,11 +521,14 @@ type MistralFunctionChunk record {
 
 // ── Wire → normalized mapping ──────────────────────────────────────────────
 // Projects each publisher's native streamed chunk/event onto the normalized
-// `ai:ChatCompletionChunk` that `chatStream` must return.
+// `ai:ChatMessageChunk` that `chatAsStream` must return. Token usage and the raw
+// response/message id are reported straight onto the span by each iterator from the
+// wire type, since `ai:ChatMessageChunk` carries neither field.
 
-# Maps a Vertex AI Gemini streamed chunk onto the normalized `ai:ChatCompletionChunk`.
+# Maps a Vertex AI Gemini streamed chunk onto the normalized `ai:ChatMessageChunk`.
 # Gemini does not fragment function-call arguments across chunks the way OpenAI/Anthropic
-# do, so every function-call part carries its complete arguments.
+# do, so every function-call part carries its complete arguments. Only the first candidate
+# is mapped, matching `buildChatAssistantMessage`'s handling of the non-streaming response.
 #
 # The tool-call index runs across the whole stream rather than restarting per chunk:
 # `ai:ToolCallChunk.index` identifies one call for a consumer accumulating fragments, so
@@ -525,64 +536,60 @@ type MistralFunctionChunk record {
 #
 # + w - The parsed Gemini streaming wire chunk (one SSE event)
 # + startToolCallIndex - The tool-call index to assign to the first function call in this chunk
-# + return - The normalized chunk, and the tool-call index the next chunk should start from
+# + return - The normalized chunk (or `()` if this event carries nothing for the caller), and
+#            the tool-call index the next chunk should start from
 isolated function toAiChunkGemini(VertexAiResponse w, int startToolCallIndex = 0)
-        returns [ai:ChatCompletionChunk, int] {
-    ai:ChatCompletionChunkChoice[] choices = [];
-    int nextToolCallIndex = startToolCallIndex;
+        returns [ai:ChatMessageChunk?, int] {
     VertexAiCandidate[]? candidates = w.candidates;
-    if candidates is VertexAiCandidate[] {
-        foreach VertexAiCandidate c in candidates {
-            string textAccumulator = "";
-            ai:ToolCallChunk[] toolCalls = [];
-            VertexAiContent? content = c.content;
-            if content is VertexAiContent {
-                foreach VertexAiPart part in content.parts ?: [] {
-                    string? text = part.text;
-                    if text is string {
-                        textAccumulator += text;
-                    }
-                    VertexAiFunctionCall? fc = part.functionCall;
-                    if fc is VertexAiFunctionCall {
-                        toolCalls.push({
-                            index: nextToolCallIndex,
-                            'function: {name: fc.name, arguments: (fc.args ?: {}).toJsonString()}
-                        });
-                        nextToolCallIndex += 1;
-                    }
+    if candidates is () || candidates.length() == 0 {
+        return [(), startToolCallIndex];
+    }
+    VertexAiCandidate candidate = candidates[0];
+    int nextToolCallIndex = startToolCallIndex;
+    string contentAccumulator = "";
+    string reasoningAccumulator = "";
+    ai:ToolCallChunk[] toolCalls = [];
+    VertexAiContent? content = candidate.content;
+    if content is VertexAiContent {
+        foreach VertexAiPart part in content.parts ?: [] {
+            string? text = part.text;
+            if text is string {
+                if part.thought == true {
+                    reasoningAccumulator += text;
+                } else {
+                    contentAccumulator += text;
                 }
             }
-            ai:ChatCompletionChunkDelta delta = {
-                role: ai:ASSISTANT,
-                content: textAccumulator.length() > 0 ? textAccumulator : ()
-            };
-            if toolCalls.length() > 0 {
-                delta.toolCalls = toolCalls;
+            VertexAiFunctionCall? fc = part.functionCall;
+            if fc is VertexAiFunctionCall {
+                toolCalls.push({
+                    index: nextToolCallIndex,
+                    name: fc.name,
+                    arguments: (fc.args ?: {}).toJsonString()
+                });
+                nextToolCallIndex += 1;
             }
-            choices.push({
-                index: c.index ?: 0,
-                delta,
-                finishReason: mapGeminiFinishReason(c.finishReason, toolCalls.length() > 0)
-            });
         }
     }
 
-    ai:ChatCompletionChunk chunk = {choices};
+    string? contentFragment = contentAccumulator.length() > 0 ? contentAccumulator : ();
+    string? reasoningFragment = reasoningAccumulator.length() > 0 ? reasoningAccumulator : ();
+    ai:ToolCallChunk[]? toolCallsOut = toolCalls.length() > 0 ? toolCalls : ();
+    ai:FinishReason? finishReason = mapGeminiFinishReason(candidate.finishReason, toolCalls.length() > 0);
+    if contentFragment is () && reasoningFragment is () && toolCallsOut is () && finishReason is () {
+        return [(), nextToolCallIndex];
+    }
+
+    ai:ChatMessageChunk chunk = {
+        role: ai:ASSISTANT,
+        content: contentFragment,
+        reasoning: reasoningFragment,
+        toolCalls: toolCallsOut,
+        finishReason
+    };
     string? responseId = w.responseId;
     if responseId is string {
         chunk.id = responseId;
-    }
-    string? modelVersion = w.modelVersion;
-    if modelVersion is string {
-        chunk.model = modelVersion;
-    }
-    VertexAiUsageMetadata? usage = w.usageMetadata;
-    if usage is VertexAiUsageMetadata {
-        chunk.usage = {
-            promptTokens: usage.promptTokenCount,
-            completionTokens: usage.candidatesTokenCount,
-            totalTokens: usage.totalTokenCount
-        };
     }
     return [chunk, nextToolCallIndex];
 }
@@ -612,18 +619,15 @@ isolated function mapGeminiFinishReason(string? finishReason, boolean hasToolCal
 }
 
 # Maps a single Anthropic Messages API stream event onto a normalized
-# `ai:ChatCompletionChunk`. Several event types (block-stop, ping, lifecycle
-# bookkeeping) carry no data for the normalized shape and yield `()`.
+# `ai:ChatMessageChunk`. Several event types (block-stop, ping, lifecycle bookkeeping,
+# and `message_start` itself) carry no data for the normalized shape and yield `()`; the
+# iterator reads `message_start`/`message_delta` directly off the raw event for the
+# response id and token usage it reports to the span, since neither field exists on
+# `ai:ChatMessageChunk`.
 #
 # + event - The parsed Anthropic stream event
-# + promptTokens - Prompt token count captured from the `message_start` event, if any;
-#                  threaded through so the final `message_delta` chunk can report full usage
 # + return - The normalized chunk, or `()` if this event maps to no chunk
-isolated function toAiChunkAnthropicEvent(AnthropicStreamEvent event, int? promptTokens)
-        returns ai:ChatCompletionChunk? {
-    if event.'type == "message_start" {
-        return {choices: [{index: 0, delta: {role: ai:ASSISTANT}}]};
-    }
+isolated function toAiChunkAnthropicEvent(AnthropicStreamEvent event) returns ai:ChatMessageChunk? {
     if event.'type == "content_block_start" {
         AnthropicStreamContentBlock? block = event.content_block;
         if block is AnthropicStreamContentBlock && block.'type == "tool_use" {
@@ -634,9 +638,9 @@ isolated function toAiChunkAnthropicEvent(AnthropicStreamEvent event, int? promp
             }
             string? name = block.name;
             if name is string {
-                toolCall.'function = {name};
+                toolCall.name = name;
             }
-            return {choices: [{index: 0, delta: {toolCalls: [toolCall]}}]};
+            return {role: ai:ASSISTANT, toolCalls: [toolCall]};
         }
         return ();
     }
@@ -644,11 +648,14 @@ isolated function toAiChunkAnthropicEvent(AnthropicStreamEvent event, int? promp
         AnthropicStreamDelta? delta = event.delta;
         if delta is AnthropicStreamDelta {
             if delta.'type == "text_delta" {
-                return {choices: [{index: 0, delta: {content: delta.text}}]};
+                return {role: ai:ASSISTANT, content: delta.text};
+            }
+            if delta.'type == "thinking_delta" {
+                return {role: ai:ASSISTANT, reasoning: delta.thinking};
             }
             if delta.'type == "input_json_delta" {
-                ai:ToolCallChunk toolCall = {index: event.index ?: 0, 'function: {arguments: delta.partial_json ?: ""}};
-                return {choices: [{index: 0, delta: {toolCalls: [toolCall]}}]};
+                ai:ToolCallChunk toolCall = {index: event.index ?: 0, arguments: delta.partial_json ?: ""};
+                return {role: ai:ASSISTANT, toolCalls: [toolCall]};
             }
         }
         return ();
@@ -656,24 +663,14 @@ isolated function toAiChunkAnthropicEvent(AnthropicStreamEvent event, int? promp
     if event.'type == "message_delta" {
         AnthropicStreamDelta? delta = event.delta;
         ai:FinishReason? finishReason = delta is AnthropicStreamDelta ? mapAnthropicStopReason(delta.stop_reason) : ();
-        ai:ChatCompletionChunk chunk = {choices: [{index: 0, delta: {}, finishReason}]};
-        int? completionTokens = event.usage?.output_tokens;
-        if promptTokens is int || completionTokens is int {
-            // A total is only reported when both halves are known - summing with a
-            // zero stand-in would hand the caller a plausible but wrong figure.
-            ai:CompletionTokenUsage usage = {promptTokens, completionTokens};
-            if promptTokens is int && completionTokens is int {
-                usage.totalTokens = promptTokens + completionTokens;
-            }
-            chunk.usage = usage;
+        if finishReason is () {
+            return ();
         }
-        return chunk;
+        return {role: ai:ASSISTANT, finishReason};
     }
-    if event.'type == "error" {
-        // Surfaced as an error by the iterator, not reached via this mapping function.
-        return ();
-    }
-    // content_block_stop, message_stop, ping, and any other lifecycle events carry no data.
+    // message_start (handled by the iterator for span bookkeeping only), content_block_stop,
+    // message_stop, ping, error (surfaced by the iterator, not reached here), and any other
+    // lifecycle event carries no data for the caller.
     return ();
 }
 
@@ -722,87 +719,62 @@ isolated function mapAnthropicStopReason(string? stopReason) returns ai:FinishRe
     return ();
 }
 
-# Maps a streamed OpenAI-compatible chunk (Mistral or an open-models publisher)
-# onto the normalized `ai:ChatCompletionChunk`. Forwards tool calls on every
-# chunk (not just the first), so argument fragments stream through correctly.
+# Maps a streamed OpenAI-compatible chunk (Mistral or an open-models publisher, including
+# DeepSeek's `reasoning_content`) onto the normalized `ai:ChatMessageChunk`. Only the first
+# choice is mapped, since none of the endpoints this module targets are asked for more than
+# one. A chunk with no choices (the final usage-only chunk sent when usage reporting is
+# opted into) or only the role-only opening delta carries nothing for the caller and maps
+# to `()`; the iterator reads `usage` directly off the raw wire chunk for the span, since
+# `ai:ChatMessageChunk` carries no usage field.
 #
 # + w - The parsed OpenAI-compatible streaming wire chunk
-# + return - The normalized chunk consumed by the `ai` module
-isolated function toAiChunkOpenAiCompat(MistralStreamChunk w) returns ai:ChatCompletionChunk {
-    ai:ChatCompletionChunkChoice[] choices = [];
-    foreach MistralStreamChoice c in w.choices ?: [] {
-        ai:ChatCompletionChunkDelta delta = {content: c.delta?.content};
-        ai:ROLE? role = mapRole(c.delta?.role);
-        if role is ai:ROLE {
-            delta.role = role;
-        }
-        MistralToolCallChunk[]? wireToolCalls = c.delta?.tool_calls;
-        if wireToolCalls is MistralToolCallChunk[] {
-            ai:ToolCallChunk[] toolCalls = [];
-            foreach MistralToolCallChunk t in wireToolCalls {
-                ai:ToolCallChunk toolCall = {index: t.index};
-                string? id = t?.id;
-                if id is string {
-                    toolCall.id = id;
-                }
-                MistralFunctionChunk? fn = t?.'function;
-                if fn is MistralFunctionChunk {
-                    ai:FunctionCallChunk functionFragment = {};
-                    string? name = fn?.name;
-                    if name is string {
-                        functionFragment.name = name;
-                    }
-                    string? args = fn?.arguments;
-                    if args is string {
-                        functionFragment.arguments = args;
-                    }
-                    toolCall.'function = functionFragment;
-                }
-                toolCalls.push(toolCall);
+# + return - The normalized chunk, or `()` if this chunk carries nothing for the caller
+isolated function toAiChunkOpenAiCompat(MistralStreamChunk w) returns ai:ChatMessageChunk? {
+    MistralStreamChoice[]? choices = w.choices;
+    if choices is () || choices.length() == 0 {
+        return ();
+    }
+    MistralChunkDelta delta = choices[0].delta;
+    string? content = delta?.content == "" ? () : delta?.content;
+    string? reasoning = delta?.reasoning_content == "" ? () : delta?.reasoning_content;
+
+    ai:ToolCallChunk[]? toolCalls = ();
+    MistralToolCallChunk[]? wireToolCalls = delta?.tool_calls;
+    if wireToolCalls is MistralToolCallChunk[] && wireToolCalls.length() > 0 {
+        ai:ToolCallChunk[] mappedToolCalls = [];
+        foreach MistralToolCallChunk t in wireToolCalls {
+            ai:ToolCallChunk toolCall = {index: t.index};
+            string? id = t?.id;
+            if id is string {
+                toolCall.id = id;
             }
-            delta.toolCalls = toolCalls;
+            MistralFunctionChunk? fn = t?.'function;
+            if fn is MistralFunctionChunk {
+                string? name = fn?.name;
+                if name is string {
+                    toolCall.name = name;
+                }
+                string? args = fn?.arguments;
+                if args is string {
+                    toolCall.arguments = args;
+                }
+            }
+            mappedToolCalls.push(toolCall);
         }
-        choices.push({index: c?.index ?: 0, delta, finishReason: mapOpenAiCompatFinishReason(c?.finish_reason)});
+        toolCalls = mappedToolCalls;
     }
 
-    ai:ChatCompletionChunk chunk = {choices};
+    ai:FinishReason? finishReason = mapOpenAiCompatFinishReason(choices[0]?.finish_reason);
+    if content is () && reasoning is () && toolCalls is () && finishReason is () {
+        return ();
+    }
+
+    ai:ChatMessageChunk chunk = {role: ai:ASSISTANT, content, reasoning, toolCalls, finishReason};
     string? id = w.id;
     if id is string {
         chunk.id = id;
     }
-    MistralUsage? usage = w.usage;
-    if usage is MistralUsage {
-        ai:CompletionTokenUsage mappedUsage = {
-            promptTokens: usage.prompt_tokens,
-            completionTokens: usage.completion_tokens
-        };
-        int? totalTokens = usage.total_tokens;
-        if totalTokens is int {
-            mappedUsage.totalTokens = totalTokens;
-        }
-        chunk.usage = mappedUsage;
-    }
     return chunk;
-}
-
-# Safely maps an OpenAI-compatible role string onto the `ai:ROLE` enum; returns
-# `()` for absent or unrecognized values rather than panicking on a cast.
-#
-# + role - The role string from the wire delta
-# + return - The mapped `ai:ROLE`, or `()` when absent/unrecognized
-isolated function mapRole(string? role) returns ai:ROLE? {
-    match role {
-        "system" => {
-            return ai:SYSTEM;
-        }
-        "user" => {
-            return ai:USER;
-        }
-        "assistant" => {
-            return ai:ASSISTANT;
-        }
-    }
-    return ();
 }
 
 # Safely maps an OpenAI-compatible `finish_reason` onto the `ai:FinishReason` enum.

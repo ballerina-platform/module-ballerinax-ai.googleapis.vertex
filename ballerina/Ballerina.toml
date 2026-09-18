@@ -10,8 +10,8 @@ repository = "https://github.com/ballerina-platform/module-ballerinax-ai.googlea
 version = "1.0.1"
 
 # TODO: Remove this block before merging.
-# The streaming API (`ai:ChatCompletionChunk`, `ModelProvider.chatStream`,
-# `ModelProvider.generateStream`) is not in any published `ballerina/ai` release yet;
+# The streaming API (`ai:ChatMessageChunk`, `ModelProvider.chatAsStream`,
+# `ModelProvider.generateAsStream`) is not in any published `ballerina/ai` release yet;
 # it exists only in the local build of the `feat/add-chat-stream-support` branch of
 # module-ballerina-ai. The latest on Ballerina Central is 1.14.1 and it does not carry
 # the contract. Once that lands and is released, drop `repository = "local"` and let
