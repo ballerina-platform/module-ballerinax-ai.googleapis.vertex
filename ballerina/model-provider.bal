@@ -448,6 +448,10 @@ public isolated distinct client class ModelProvider {
         if stop is string {
             generationConfig.stopSequences = [stop];
         }
+        // Ask thinking models to return thought summaries so they stream as `reasoning`
+        if supportsGeminiThinking(self.modelType) {
+            generationConfig.thinkingConfig = {includeThoughts: true};
+        }
 
         map<json> requestPayload = {
             "contents": contents.toJson(),

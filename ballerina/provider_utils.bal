@@ -65,6 +65,14 @@ isolated function isOpenModelPublisher(string publisher) returns boolean {
         publisher == QWEN || publisher == KIMI || publisher == MINIMAX || publisher == OPENAI;
 }
 
+# Whether a Gemini model thinks by default (and hence accepts `includeThoughts`). Vertex
+# rejects `includeThoughts` with HTTP 400 when thinking is disabled, which is the case for
+# Gemini 1.x/2.0 models and for Flash-Lite models (thinking off by default).
+isolated function supportsGeminiThinking(string modelType) returns boolean {
+    return modelType.startsWith("gemini-") && !modelType.startsWith("gemini-1.")
+        && !modelType.startsWith("gemini-2.0") && !modelType.includes("flash-lite");
+}
+
 isolated function buildEmbedContentPath(string projectId, string location, string modelType) returns string {
     return string `/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelType}:predict`;
 }

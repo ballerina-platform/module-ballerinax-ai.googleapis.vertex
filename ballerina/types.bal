@@ -207,11 +207,18 @@ type VertexAiToolConfig record {
     VertexAiFunctionCallingConfig functionCallingConfig;
 };
 
+# Vertex AI thinking configuration for Gemini thinking models.
+type VertexAiThinkingConfig record {
+    # Whether the response should include thought summaries (parts flagged `thought: true`)
+    boolean includeThoughts?;
+};
+
 # Vertex AI generation configuration parameters.
 type VertexAiGenerationConfig record {
     decimal temperature?;
     int maxOutputTokens?;
     string[] stopSequences?;
+    VertexAiThinkingConfig thinkingConfig?;
 };
 
 # The full Vertex AI generateContent request body.
