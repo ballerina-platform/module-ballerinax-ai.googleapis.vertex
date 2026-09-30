@@ -246,7 +246,7 @@ public isolated distinct client class ModelProvider {
     # + tools - Tool definitions to be used for tool calling
     # + stop - Stop sequence to stop the completion
     # + return - A stream of chat message chunks, or an error if the request fails
-    remote function chatAsStream(ai:ChatMessage[]|ai:ChatUserMessage messages,
+    isolated remote function chatAsStream(ai:ChatMessage[]|ai:ChatUserMessage messages,
             ai:ChatCompletionFunctions[] tools = [], string? stop = ())
             returns stream<ai:ChatMessageChunk, ai:Error?>|ai:Error {
         observe:ChatSpan span = observe:createChatSpan(self.modelType);
@@ -303,7 +303,7 @@ public isolated distinct client class ModelProvider {
     #
     # + prompt - The prompt to use in the request
     # + return - A stream of text fragments, or an error if the request fails
-    remote function generateAsStream(ai:Prompt prompt) returns stream<string, ai:Error?>|ai:Error {
+    isolated remote function generateAsStream(ai:Prompt prompt) returns stream<string, ai:Error?>|ai:Error {
         stream<ai:ChatMessageChunk, ai:Error?>|ai:Error chunks = self->chatAsStream({role: ai:USER, content: prompt});
         if chunks is ai:Error {
             return chunks;
@@ -435,7 +435,7 @@ public isolated distinct client class ModelProvider {
 
     // ── Private publisher-specific streaming implementations ──────────────────
 
-    private function chatStreamGemini(ai:ChatMessage[]|ai:ChatUserMessage messages,
+    private isolated function chatStreamGemini(ai:ChatMessage[]|ai:ChatUserMessage messages,
             ai:ChatCompletionFunctions[] tools, string? stop, string path, map<string> headers,
             observe:ChatSpan span) returns stream<ai:ChatMessageChunk, ai:Error?>|ai:Error {
         var [contents, systemInstruction] = check convertMessagesToVertexAiContents(messages);
@@ -473,7 +473,7 @@ public isolated distinct client class ModelProvider {
         return chunkStream;
     }
 
-    private function chatStreamAnthropic(ai:ChatMessage[]|ai:ChatUserMessage messages,
+    private isolated function chatStreamAnthropic(ai:ChatMessage[]|ai:ChatUserMessage messages,
             ai:ChatCompletionFunctions[] tools, string? stop, string path, map<string> headers,
             observe:ChatSpan span) returns stream<ai:ChatMessageChunk, ai:Error?>|ai:Error {
         var [anthropicMessages, systemPrompt] = check convertMessagesToAnthropicMessages(messages);
@@ -493,7 +493,7 @@ public isolated distinct client class ModelProvider {
         return chunkStream;
     }
 
-    private function chatStreamOpenAiCompat(ai:ChatMessage[]|ai:ChatUserMessage messages,
+    private isolated function chatStreamOpenAiCompat(ai:ChatMessage[]|ai:ChatUserMessage messages,
             ai:ChatCompletionFunctions[] tools, string? stop, string path, map<string> headers,
             observe:ChatSpan span) returns stream<ai:ChatMessageChunk, ai:Error?>|ai:Error {
         MistralMessage[]|ai:Error mistralMessages = convertMessagesToMistralMessages(messages);
