@@ -111,6 +111,7 @@ clean {
 }
 
 build.dependsOn ':ai.googleapis.vertex-native:build'
+test.dependsOn ':ai.googleapis.vertex-native:build'
 build.dependsOn ":ai.googleapis.vertex-compiler-plugin:build"
 build.dependsOn "generatePomFileForMavenPublication"
 publishToMavenLocal.dependsOn build
