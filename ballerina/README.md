@@ -1,9 +1,6 @@
 ## Overview
 
-This module offers APIs for connecting with models hosted on
-[Google Vertex AI](https://cloud.google.com/vertex-ai), including Google Gemini models and partner
-models from Anthropic, Mistral, Meta, DeepSeek, Qwen, Kimi, and MiniMax available through the
-Vertex AI Model Garden.
+The `ai.googleapis.vertex` module provides `ModelProvider` and `EmbeddingProvider` implementations for the [`ballerina/ai`](https://central.ballerina.io/ballerina/ai/latest) agent framework, backed by [Google Vertex AI](https://cloud.google.com/vertex-ai). Use it to drive Gemini models and Vertex AI Model Garden partner models (Anthropic, Mistral, Meta, DeepSeek, and others) from your Ballerina AI agents.
 
 ## Prerequisites
 
