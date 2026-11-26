@@ -17,8 +17,6 @@
 import ballerina/ai;
 import ballerina/ai.observe;
 import ballerina/http;
-import ballerina/io;
-import ballerina/time;
 
 # EmbeddingProvider is a client class that provides an interface for generating
 # vector embeddings using Google Vertex AI text embedding models.
@@ -26,9 +24,7 @@ import ballerina/time;
 public isolated distinct client class EmbeddingProvider {
     *ai:EmbeddingProvider;
     private final http:Client vertexAiClient;
-    private final VertexAiAuth auth;
-    private string accessToken = "";
-    private int tokenExpiryTime = 0;
+    private final AuthProvider authProvider;
     private final string modelType;
     private final string projectId;
     private final string location;
@@ -36,7 +32,8 @@ public isolated distinct client class EmbeddingProvider {
     # Initializes the Vertex AI embedding provider with the given configuration.
     #
     # + auth - Authentication config: `OAuth2RefreshConfig` for OAuth2 refresh token flow,
-    #          or `ServiceAccountConfig` for automatic token refresh via service account
+    #          `ServiceAccountConfig` or `ServiceAccountJsonFilePath` for automatic token refresh via a
+    #          service account key, or `WorkloadIdentityConfig` for Workload Identity Federation
     # + projectId - The Google Cloud project ID
     # + location - The Google Cloud region (e.g., `"global"`)
     # + modelType - The embedding model to use
@@ -74,6 +71,9 @@ public isolated distinct client class EmbeddingProvider {
             validation: connectionConfig.validation
         };
 
+        // Created before the OAuth2 refresh configuration is added, so the Workload Identity Federation
+        // token clients do not use it.
+        self.authProvider = check createAuthProvider(auth, clientConfig);
         if auth is OAuth2RefreshConfig {
             clientConfig.auth = {
                 refreshUrl: auth.refreshUrl,
@@ -89,19 +89,6 @@ public isolated distinct client class EmbeddingProvider {
         }
 
         self.vertexAiClient = httpClient;
-        if auth is ServiceAccountJsonFilePath {
-            json|error fileContent = io:fileReadJson(auth);
-            if fileContent is error {
-                return error ai:Error("Failed to read service account key file", fileContent);
-            }
-            record {string client_email; string private_key;}|error saRecord = fileContent.fromJsonWithType();
-            if saRecord is error {
-                return error ai:Error("Invalid service account key file: missing or invalid client_email/private_key", saRecord);
-            }
-            self.auth = {clientEmail: saRecord.client_email, privateKey: saRecord.private_key};
-        } else {
-            self.auth = auth;
-        }
         self.modelType = modelType;
         self.projectId = projectId;
         self.location = location;
@@ -176,14 +163,8 @@ public isolated distinct client class EmbeddingProvider {
 
     private isolated function embedText(string content) returns ai:Embedding|ai:Error {
         string path = buildEmbedContentPath(self.projectId, self.location, self.modelType);
-        map<string> headers = {"Content-Type": "application/json"};
-        if self.auth is ServiceAccountConfig {
-            string|ai:Error accessToken = self.getAccessToken();
-            if accessToken is ai:Error {
-                return accessToken;
-            }
-            headers["Authorization"] = string `Bearer ${accessToken}`;
-        }
+        map<string> & readonly authHeaders = check self.authProvider.getHeaders();
+        map<string> headers = buildRequestHeaders(authHeaders);
 
         map<json> requestPayload = {
             "instances": [{"content": content}]
@@ -203,22 +184,6 @@ public isolated distinct client class EmbeddingProvider {
             return error ai:LlmInvalidResponseError("Vertex AI returned an empty embedding vector");
         }
         return values;
-    }
-
-    private isolated function getAccessToken() returns string|ai:Error {
-        lock {
-            int currentTime = time:utcNow()[0];
-            if self.accessToken.length() > 0 && currentTime < self.tokenExpiryTime - 300 {
-                return self.accessToken;
-            }
-            string|error token = getServiceAccountToken(<ServiceAccountConfig>self.auth);
-            if token is error {
-                return error ai:Error("Failed to obtain service account access token", token);
-            }
-            self.accessToken = token;
-            self.tokenExpiryTime = currentTime + 3600;
-            return self.accessToken;
-        }
     }
 }
 

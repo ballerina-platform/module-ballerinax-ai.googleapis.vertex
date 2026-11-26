@@ -253,7 +253,7 @@ isolated function getExpectedResponseSchema(typedesc<anydata> expectedResponseTy
 # Dispatches to the correct publisher-specific request format, forces the "getResults" tool
 # call to get structured output, extracts the arguments, and deserialises them as the
 # expected type.
-isolated function generateLlmResponse(http:Client vertexAiClient, string accessToken,
+isolated function generateLlmResponse(http:Client vertexAiClient, AuthProvider authProvider,
         string modelType, string projectId, string location, string publisher,
         int maxTokens, decimal? temperature,
         ai:Prompt prompt, typedesc<json> expectedResponseTypedesc) returns anydata|ai:Error {
@@ -270,11 +270,13 @@ isolated function generateLlmResponse(http:Client vertexAiClient, string accessT
         return err;
     }
 
+    map<string> & readonly|ai:Error authHeaders = authProvider.getHeaders();
+    if authHeaders is ai:Error {
+        span.close(authHeaders);
+        return authHeaders;
+    }
     string path = buildGenerateContentPath(projectId, location, modelType, publisher);
-    map<string> headers = {
-        "Authorization": string `Bearer ${accessToken}`,
-        "Content-Type": "application/json"
-    };
+    map<string> headers = buildRequestHeaders(authHeaders);
 
     map<json> arguments;
 
