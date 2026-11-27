@@ -73,7 +73,7 @@ final ai:ModelProvider vertexModel = check new vertex:ModelProvider(
 );
 ```
 
-**Option 4 — Workload Identity Federation** (for workloads outside Google Cloud, such as on AWS, Azure, Kubernetes, or GitHub Actions, with no service account key):
+**Option 4 — Workload Identity Federation** (for workloads outside Google Cloud whose identity provider issues OIDC tokens or JWTs, such as Kubernetes including Amazon EKS and Azure AKS, GitHub Actions, or Microsoft Entra ID, with no service account key):
 
 ```ballerina
 final ai:ModelProvider vertexModel = check new vertex:ModelProvider(
@@ -89,7 +89,9 @@ final ai:ModelProvider vertexModel = check new vertex:ModelProvider(
 );
 ```
 
-The connector exchanges the identity token for a short-lived access token at the Google Cloud Security Token Service, and, when `serviceAccountEmail` is set, for an access token of that service account. It reuses the access token until it is about to expire, then exchanges the identity token again. Once the identity token expires or is rejected, create a new model provider with a new identity token. Grant the federated identity (or, with `serviceAccountEmail`, the service account) the Vertex AI User role (`roles/aiplatform.user`). See [Workload Identity Federation](https://cloud.google.com/iam/docs/workload-identity-federation) to set up the workload identity pool and provider.
+The connector exchanges the identity token for a short-lived access token at the Google Cloud Security Token Service, and, when `serviceAccountEmail` is set, for an access token of that service account. It reuses the access token until it is about to expire, then exchanges the identity token again. Once the identity token expires or is rejected, create a new model provider with a new identity token. Grant the federated identity (or, with `serviceAccountEmail`, the service account) the Vertex AI User role (`roles/aiplatform.user`). See [Workload Identity Federation](https://cloud.google.com/iam/docs/workload-identity-federation) to set up the workload identity pool and provider. Google's native AWS federation, which exchanges a signed AWS request (`aws4_request`) instead of a token, is not supported. On AWS, use an OIDC or JWT identity provider, such as Amazon EKS service account tokens.
+
+A module-level `final` provider, as above, cannot be replaced. Use one only when the identity token outlives the application. Many identity tokens expire within an hour, for example Kubernetes projected service account tokens and GitHub Actions OIDC tokens. For those, create the provider where you can replace it, and create a new one with a new identity token before the old identity token expires.
 
 ### Step 3: Invoke chat completion
 

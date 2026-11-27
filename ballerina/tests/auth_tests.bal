@@ -88,7 +88,8 @@ service /auth on new http:Listener(8096) {
         }
         test:assertEquals(project, "-");
         test:assertEquals(method, string `${WIF_SERVICE_ACCOUNT}:generateAccessToken`);
-        if mode == "deny" {
+        // `deny` refuses every request; `deny-once` refuses only the first, like an IAM binding that is granted later.
+        if mode == "deny" || (mode == "deny-once" && count == 1) {
             return <http:Forbidden>{body: {'error: {code: 403, message: "Permission 'iam.serviceAccounts.getAccessToken' denied", status: "PERMISSION_DENIED"}}};
         }
         return {
@@ -264,6 +265,29 @@ function testWorkloadIdentityServiceAccountImpersonation() returns error? {
 }
 
 @test:Config
+function testWorkloadIdentityImpersonationScopes() returns error? {
+    string testId = "wif-impersonation-scopes";
+    // With impersonation, the requested scopes apply to the service account access token. The federated access
+    // token is requested with `cloud-platform`, which the IAM Service Account Credentials API needs.
+    WorkloadIdentityConfig config = {
+        audience: WIF_AUDIENCE,
+        identityToken: WIF_IDENTITY_TOKEN,
+        serviceAccountEmail: WIF_SERVICE_ACCOUNT,
+        scopes: ["https://www.googleapis.com/auth/userinfo.email"],
+        tokenUrl: stsUrl(testId),
+        iamCredentialsUrl: string `${AUTH_MOCK_URL}/iam/${testId}/ok`
+    };
+    ModelProvider provider = check wifProvider(testId, config);
+    _ = check provider->chat([{role: ai:USER, content: "Hi"}]);
+    test:assertEquals(getStsRequests(testId)[0]["scope"], "https://www.googleapis.com/auth/cloud-platform");
+    json[]? requests;
+    lock {
+        requests = iamRequests[testId].clone();
+    }
+    test:assertEquals(requests, [{scope: ["https://www.googleapis.com/auth/userinfo.email"], lifetime: "3600s"}]);
+}
+
+@test:Config
 function testWorkloadIdentityImpersonationDenied() returns error? {
     string testId = "wif-impersonation-denied";
     ModelProvider provider = check wifProvider(testId,
@@ -275,10 +299,29 @@ function testWorkloadIdentityImpersonationDenied() returns error? {
         }
         test:assertTrue(result.message().startsWith("Service account impersonation failed with status 403"),
             result.message());
-        test:assertTrue(result.message().includes("Create a new provider"), result.message());
+        // The identity token is fine, so the error points to the IAM binding, not to a new identity token.
+        test:assertTrue(result.message().includes("roles/iam.workloadIdentityUser"), result.message());
+        test:assertFalse(result.message().includes("Create a new provider"), result.message());
     }
-    // A denied impersonation is not tried again.
+    // The second request is inside the backoff period, so it returns the recorded error.
     test:assertEquals(getStsRequests(testId).length(), 1);
+}
+
+@test:Config
+function testWorkloadIdentityImpersonationRecoversAfterBackoff() returns error? {
+    string testId = "wif-impersonation-recovers";
+    // The first impersonation is refused, like an IAM binding that is still being applied. After the backoff
+    // period, the exchange is tried again and succeeds.
+    ModelProvider provider = check wifProvider(testId,
+        wifConfig(testId, serviceAccountEmail = WIF_SERVICE_ACCOUNT, iamMode = "deny-once"));
+    ai:ChatAssistantMessage|ai:Error first = provider->chat([{role: ai:USER, content: "Hi"}]);
+    if first !is ai:LlmError {
+        test:assertFail("Expected an ai:LlmError");
+    }
+    runtime:sleep(5.5);
+    _ = check provider->chat([{role: ai:USER, content: "Hi"}]);
+    assertVertexAuth(testId, "chat", string `Bearer sa-access-token-${testId}-2`);
+    test:assertEquals(getStsRequests(testId).length(), 2);
 }
 
 @test:Config
@@ -315,10 +358,10 @@ function testWorkloadIdentityDefaultLifetime() returns error? {
 @test:Config
 function testWorkloadIdentityRefreshesAccessTokenBeforeExpiry() returns error? {
     string testId = "wif-refresh";
-    // A 6-second access token is refreshed after 3 seconds, halfway through its lifetime.
-    ModelProvider provider = check wifProvider(testId, wifConfig(testId, expiresIn = 6));
+    // A 20-second access token is refreshed after 10 seconds, halfway through its lifetime.
+    ModelProvider provider = check wifProvider(testId, wifConfig(testId, expiresIn = 20));
     _ = check provider->chat([{role: ai:USER, content: "Hi"}]);
-    runtime:sleep(3.5);
+    runtime:sleep(11);
     int _ = check provider->generate(`What is 1 + 1?`);
     test:assertEquals(getStsRequests(testId).length(), 2);
     assertVertexAuth(testId, "chat", string `Bearer sts-access-token-${testId}-1`);
@@ -328,10 +371,10 @@ function testWorkloadIdentityRefreshesAccessTokenBeforeExpiry() returns error? {
 @test:Config
 function testWorkloadIdentityUsesCachedTokenWhenRefreshFails() returns error? {
     string testId = "wif-refresh-fails";
-    // A 6-second access token is refreshed after 3 seconds, and used until 4.5 seconds if the refresh fails.
-    ModelProvider provider = check wifProvider(testId, wifConfig(testId, expiresIn = 6, failAfter = 1));
+    // A 20-second access token is refreshed after 10 seconds, and used until 15 seconds if the refresh fails.
+    ModelProvider provider = check wifProvider(testId, wifConfig(testId, expiresIn = 20, failAfter = 1));
     _ = check provider->chat([{role: ai:USER, content: "Hi"}]);
-    runtime:sleep(3.5);
+    runtime:sleep(11);
     int _ = check provider->generate(`What is 1 + 1?`);
     test:assertEquals(getStsRequests(testId).length(), 2);
     assertVertexAuth(testId, "generate", string `Bearer sts-access-token-${testId}-1`);

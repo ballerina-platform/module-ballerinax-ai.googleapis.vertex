@@ -50,10 +50,12 @@ public enum SubjectTokenType {
     ID_TOKEN = "urn:ietf:params:oauth:token-type:id_token"
 }
 
-# Google Cloud Workload Identity Federation credentials. The connector exchanges an identity token issued by your
-# identity provider (for example, AWS, Microsoft Entra ID, Kubernetes, GitHub Actions, or any OIDC provider) for a
-# short-lived Google Cloud access token at the Security Token Service, so no service account key is needed. The
-# access token is reused until it is about to expire, then the identity token is exchanged again.
+# Google Cloud Workload Identity Federation credentials. The connector exchanges an identity token (a JWT or an OIDC
+# ID token) issued by your identity provider, for example Kubernetes (including Amazon EKS and Azure AKS), GitHub
+# Actions, Microsoft Entra ID, or any OIDC provider, for a short-lived Google Cloud access token at the Security Token
+# Service, so no service account key is needed. The access token is reused until it is about to expire, then the
+# identity token is exchanged again. Google's native AWS federation, which exchanges a signed AWS request
+# (`aws4_request`) instead of a token, is not supported. On AWS, use an OIDC or JWT identity provider.
 # See https://cloud.google.com/iam/docs/workload-identity-federation
 public type WorkloadIdentityConfig readonly & record {|
     # The full resource name of the workload identity pool provider, in the format
@@ -68,7 +70,7 @@ public type WorkloadIdentityConfig readonly & record {|
     # access token of this service account, so Vertex AI is called as the service account. When not set, Vertex AI
     # is called as the federated identity itself, which must be granted access directly
     string serviceAccountEmail?;
-    # OAuth2 scopes to request
+    # OAuth2 scopes to request. With `serviceAccountEmail`, they apply to the service account access token
     string[] scopes = [CLOUD_PLATFORM_SCOPE];
     # The URL of the Google Cloud Security Token Service token endpoint
     string tokenUrl = DEFAULT_STS_TOKEN_URL;
@@ -290,7 +292,9 @@ isolated function exchangeIdentityToken(http:Client stsClient, http:Client? iamC
     map<string> stsRequest = {
         grant_type: TOKEN_EXCHANGE_GRANT_TYPE,
         audience: config.audience,
-        scope: string:'join(" ", ...config.scopes),
+        // When a service account is impersonated, the requested scopes are sent only to the IAM Service Account
+        // Credentials API, as Google's auth libraries do.
+        scope: config.serviceAccountEmail is string ? CLOUD_PLATFORM_SCOPE : string:'join(" ", ...config.scopes),
         requested_token_type: ACCESS_TOKEN_TYPE,
         subject_token: config.identityToken.trim(),
         subject_token_type: config.identityTokenType
@@ -306,10 +310,22 @@ isolated function exchangeIdentityToken(http:Client stsClient, http:Client? iamC
         return {token: stsResponse.access_token, expiresIn: stsExpiresIn};
     }
 
+    // The requested scopes apply to the service account access token. The federated access token only needs to
+    // call the IAM Service Account Credentials API, so it is always requested with `cloud-platform`.
     string path = string `/v1/projects/-/serviceAccounts/${serviceAccountEmail}:generateAccessToken`;
     map<json> iamRequest = {scope: config.scopes, lifetime: IMPERSONATED_TOKEN_LIFETIME};
     GenerateAccessTokenResponse|error iamResponse = iamClient->post(path, iamRequest,
         {[AUTHORIZATION_HEADER]: string `Bearer ${stsResponse.access_token}`});
+    if iamResponse is http:ApplicationResponseError {
+        // The identity token was accepted, so a 4xx here usually means the federated identity is not allowed to
+        // impersonate the service account yet, or the service account email is wrong. Both can be fixed without a
+        // new identity token, so the error is not a rejection of the identity token.
+        http:Detail detail = iamResponse.detail();
+        return error ServiceAccountImpersonationError(string `Service account impersonation failed with status ${
+            detail.statusCode}: ${detail.body.toString()}. Check that the federated identity has the Workload `
+            + string `Identity User role (roles/iam.workloadIdentityUser) on ${serviceAccountEmail}, and that the `
+            + "service account email is correct.", iamResponse);
+    }
     if iamResponse is error {
         return toExchangeError(iamResponse, "Service account impersonation",
             "the IAM Service Account Credentials API");
@@ -319,6 +335,10 @@ isolated function exchangeIdentityToken(http:Client stsClient, http:Client? iamC
         ? time:utcDiffSeconds(expireTime, time:utcNow()) : DEFAULT_TOKEN_LIFETIME_SECONDS;
     return {token: iamResponse.accessToken, expiresIn};
 }
+
+# A service account impersonation that the IAM Service Account Credentials API refused, for example because the
+# federated identity does not have the Workload Identity User role on the service account yet.
+type ServiceAccountImpersonationError distinct ai:LlmError;
 
 # Converts an error from a token endpoint to an `ai:Error`.
 #
@@ -338,13 +358,17 @@ isolated function toExchangeError(error err, string operation, string endpoint) 
     return error ai:LlmError(string `Unexpected response from ${endpoint}`, err);
 }
 
-# Returns whether a token endpoint rejected the identity token, for example because it has expired or does not
-# match the workload identity pool provider, or because the federated identity may not impersonate the service
-# account. A 4xx response other than 408 and 429 means the same identity token cannot succeed later.
+# Returns whether the Security Token Service rejected the identity token, for example because it has expired or does
+# not match the workload identity pool provider. A 4xx response other than 408 and 429 means the same identity token
+# cannot succeed later. A failed service account impersonation is not a rejection of the identity token, so it is
+# tried again after the backoff period.
 #
 # + err - The error returned by the token exchange
 # + return - `true` if the identity token was rejected
 isolated function isIdentityTokenRejected(ai:Error err) returns boolean {
+    if err is ServiceAccountImpersonationError {
+        return false;
+    }
     error? cause = err.cause();
     if cause !is http:ApplicationResponseError {
         return false;
