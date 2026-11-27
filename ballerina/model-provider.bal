@@ -17,9 +17,7 @@
 import ballerina/ai;
 import ballerina/ai.observe;
 import ballerina/http;
-import ballerina/io;
 import ballerina/jballerina.java;
-import ballerina/time;
 
 const DEFAULT_MAX_TOKEN_COUNT = 512;
 
@@ -41,9 +39,7 @@ const DEFAULT_MAX_TOKEN_COUNT = 512;
 public isolated distinct client class ModelProvider {
     *ai:ModelProvider;
     private final http:Client vertexAiClient;
-    private final VertexAiAuth auth;
-    private string accessToken = "";
-    private int tokenExpiryTime = 0;
+    private final AuthProvider authProvider;
     private final string modelType;
     private final string projectId;
     private final string location;
@@ -54,7 +50,8 @@ public isolated distinct client class ModelProvider {
     # Initializes the Vertex AI model provider with the given configuration.
     #
     # + auth - Authentication config: `OAuth2RefreshConfig` for OAuth2 refresh token flow,
-    #          or `ServiceAccountConfig` for automatic token refresh via service account
+    #          `ServiceAccountConfig` or `ServiceAccountJsonFilePath` for automatic token refresh via a
+    #          service account key, or `WorkloadIdentityConfig` for Workload Identity Federation
     # + projectId - The Google Cloud project ID
     # + location - The Google Cloud region (e.g., `"global","us-central1"`)
     # + model - The model in `"publisher/model-name"` format, e.g.:
@@ -122,6 +119,9 @@ public isolated distinct client class ModelProvider {
             validation: connectionConfig.validation
         };
 
+        // Created before the OAuth2 refresh configuration is added, so the Workload Identity Federation
+        // token clients do not use it.
+        self.authProvider = check createAuthProvider(auth, clientConfig);
         if auth is OAuth2RefreshConfig {
             clientConfig.auth = {
                 refreshUrl: auth.refreshUrl,
@@ -137,19 +137,6 @@ public isolated distinct client class ModelProvider {
         }
 
         self.vertexAiClient = httpClient;
-        if auth is ServiceAccountJsonFilePath {
-            json|error fileContent = io:fileReadJson(auth);
-            if fileContent is error {
-                return error ai:Error("Failed to read service account key file", fileContent);
-            }
-            record {string client_email; string private_key;}|error saRecord = fileContent.fromJsonWithType();
-            if saRecord is error {
-                return error ai:Error("Invalid service account key file: missing or invalid client_email/private_key", saRecord);
-            }
-            self.auth = {clientEmail: saRecord.client_email, privateKey: saRecord.private_key};
-        } else {
-            self.auth = auth;
-        }
         self.modelType = modelType;
         self.projectId = projectId;
         self.location = location;
@@ -186,15 +173,12 @@ public isolated distinct client class ModelProvider {
             span.addTools(tools);
         }
 
-        map<string> headers = {"Content-Type": "application/json"};
-        if self.auth is ServiceAccountConfig {
-            string|ai:Error accessToken = self.getAccessToken();
-            if accessToken is ai:Error {
-                span.close(accessToken);
-                return accessToken;
-            }
-            headers["Authorization"] = string `Bearer ${accessToken}`;
+        map<string> & readonly|ai:Error authHeaders = self.authProvider.getHeaders();
+        if authHeaders is ai:Error {
+            span.close(authHeaders);
+            return authHeaders;
         }
+        map<string> headers = buildRequestHeaders(authHeaders);
 
         ChatResult|ai:Error result;
         if self.publisher == ANTHROPIC {
@@ -310,22 +294,6 @@ public isolated distinct client class ModelProvider {
             inputTokens: response.usage?.input_tokens,
             outputTokens: response.usage?.output_tokens
         };
-    }
-
-    isolated function getAccessToken() returns string|ai:Error {
-        lock {
-            int currentTime = time:utcNow()[0];
-            if self.accessToken.length() > 0 && currentTime < self.tokenExpiryTime - 300 {
-                return self.accessToken;
-            }
-            string|error token = getServiceAccountToken(<ServiceAccountConfig>self.auth);
-            if token is error {
-                return error ai:Error("Failed to obtain service account access token", token);
-            }
-            self.accessToken = token;
-            self.tokenExpiryTime = currentTime + 3600;
-            return self.accessToken;
-        }
     }
 
     private isolated function executeMistralChat(ai:ChatMessage[]|ai:ChatUserMessage messages,

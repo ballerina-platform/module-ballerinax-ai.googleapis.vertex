@@ -84,7 +84,9 @@ public type ConnectionConfig record {|
 #                            re-signed and exchanged automatically before expiry.
 # - `ServiceAccountJsonFilePath` — Path to a Google Cloud service account JSON key file.
 #                                Use `ServiceAccountConfig` instead if you need to override scopes.
-public type VertexAiAuth OAuth2RefreshConfig|ServiceAccountConfig|ServiceAccountJsonFilePath;
+# - `WorkloadIdentityConfig` — Workload Identity Federation. An identity token from your identity
+#                              provider is exchanged for a short-lived access token, so no key is needed.
+public type VertexAiAuth OAuth2RefreshConfig|ServiceAccountConfig|ServiceAccountJsonFilePath|WorkloadIdentityConfig;
 
 # Path to a Google Cloud service account JSON key file.
 # The connector reads `client_email` and `private_key` from the file and refreshes
